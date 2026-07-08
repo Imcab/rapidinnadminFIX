@@ -1,4 +1,4 @@
-// ============ FIREBASE SYNC v5.9.30 - OPTIMIZADO ============
+// ============ FIREBASE SYNC v5.9.31 - OPTIMIZADO ============
 // Sistema de sincronización en tiempo real con Firebase
 // Logging reducido para producción
 
