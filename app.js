@@ -2249,6 +2249,23 @@ function persistMotelRoomsOnly() {
 function ensureRoomsSanity() {
     let wasChanged = false;
 
+    // Un arreglo VACÍO no es "corrupto" — es el estado normal antes de que
+    // termine de cargar Firebase (loadData() solo trae lo que haya en
+    // localStorage, y un dispositivo nuevo o con caché borrada no tiene
+    // nada ahí todavía). init() llama a ensureRoomsSanity() de forma
+    // síncrona, ANTES de que initFirebaseSync() (llamado al final de esa
+    // misma función) tenga oportunidad de traer los datos reales. Antes,
+    // esto se trataba igual que datos corruptos y se reemplazaba por la
+    // plantilla de 32 habitaciones por defecto — un dispositivo nuevo veía
+    // un parpadeo confuso de "todo disponible, sin huéspedes" antes de que
+    // llegaran los datos reales unos segundos después. No llegaba a
+    // subirse a Firebase (persistMotelRoomsOnly() está condicionado a
+    // _appReady, que en este punto todavía es false), pero el parpadeo
+    // visual era real y engañoso. Simplemente no hay nada que "reparar"
+    // todavía — dejar que renderRooms() siga mostrando su placeholder de
+    // "Cargando habitaciones…" hasta que los datos reales lleguen.
+    if (Array.isArray(rooms) && rooms.length === 0) return;
+
     // Validación 1: Array válido
     if (!isValidRoomsArray(rooms)) {
         if (tryRepairRoomsFromIds(rooms)) {
@@ -2317,7 +2334,7 @@ function ensureRoomsSanity() {
 
 // Initialize app
 async function init() {
-    console.log('[App] Inicializando aplicación v5.5.0...');
+    console.log('[App] Inicializando aplicación...');
     
     // Usuarios ya cargados desde caché en DOMContentLoaded (instantáneo)
     if (!users || users.length === 0) users = _getCachedUsersSync();
@@ -3383,7 +3400,10 @@ function renderRooms() {
         console.error('roomsGrid no encontrado en el DOM');
         return;
     }
-    if (!isValidRoomsArray(rooms)) {
+    // rooms vacío es "todavía no cargó", no "corrupto" — ensureRoomsSanity()
+    // ya lo ignora, pero evitamos incluso la llamada para dejar claro que
+    // no hay nada que reparar mientras se espera a Firebase.
+    if (rooms && rooms.length > 0 && !isValidRoomsArray(rooms)) {
         ensureRoomsSanity();
     }
     if (!rooms || rooms.length === 0) {
