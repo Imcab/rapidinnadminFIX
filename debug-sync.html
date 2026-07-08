@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔧 Debug Sync - Rapid Inn Admin</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #1a1a1a;
+            color: #00ff00;
+            margin: 0;
+            padding: 20px;
+            line-height: 1.4;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            border: 2px solid #00ff00;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: #000;
+        }
+        .section {
+            border: 1px solid #333;
+            margin: 10px 0;
+            background: #111;
+        }
+        .section-header {
+            background: #333;
+            padding: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .section-content {
+            padding: 15px;
+            display: none;
+        }
+        .section.active .section-content {
+            display: block;
+        }
+        .status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status.ok { background: #00aa00; color: white; }
+        .status.error { background: #aa0000; color: white; }
+        .status.warning { background: #aa5500; color: white; }
+        .status.info { background: #0055aa; color: white; }
+        .btn {
+            background: #333;
+            color: #00ff00;
+            border: 1px solid #00ff00;
+            padding: 8px 16px;
+            margin: 5px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .btn:hover {
+            background: #00ff00;
+            color: #000;
+        }
+        .log {
+            background: #000;
+            border: 1px solid #333;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+        .test-result {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid;
+        }
+        .test-result.pass { border-color: #00aa00; background: #001100; }
+        .test-result.fail { border-color: #aa0000; background: #110000; }
+        .test-result.skip { border-color: #aa5500; background: #110500; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .device-info {
+            background: #222;
+            padding: 10px;
+            border: 1px solid #444;
+        }
+        .sync-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #666;
+        }
+        .indicator.online { background: #00aa00; animation: pulse 2s infinite; }
+        .indicator.offline { background: #aa0000; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔧 DEBUGGER DE SINCRONIZACIÓN</h1>
+            <p>Herramienta de diagnóstico completo para sistemas de guardado y sincronización</p>
+            <div class="sync-status">
+                <div id="connectionIndicator" class="indicator"></div>
+                <span id="connectionStatus">Verificando conexión...</span>
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- Información del Dispositivo -->
+            <div class="section active">
+                <div class="section-header">
+                    📱 INFORMACIÓN DEL DISPOSITIVO
+                    <span id="deviceStatus" class="status info">DETECTANDO</span>
+                </div>
+                <div class="section-content">
+                    <div class="device-info">
+                        <div><strong>ID Dispositivo:</strong> <span id="deviceId">-</span></div>
+                        <div><strong>User Agent:</strong> <span id="userAgent">-</span></div>
+                        <div><strong>Plataforma:</strong> <span id="platform">-</span></div>
+                        <div><strong>Conexión:</strong> <span id="networkStatus">-</span></div>
+                        <div><strong>LocalStorage:</strong> <span id="localStorageStatus">-</span></div>
+                        <div><strong>Timestamp:</strong> <span id="currentTime">-</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Estado de Firebase -->
+            <div class="section">
+                <div class="section-header" onclick="toggleSection(this)">
+                    🔥 ESTADO DE FIREBASE
+                    <span id="firebaseStatus" class="status warning">VERIFICANDO</span>
+                </div>
+                <div class="section-content">
+                    <div><strong>Firebase Ready:</strong> <span id="fbReady">-</span></div>
+                    <div><strong>Firebase Online:</strong> <span id="fbOnline">-</span></div>
+                    <div><strong>Auth Status:</strong> <span id="fbAuth">-</span></div>
+                    <div><strong>Pending Queue:</strong> <span id="fbQueue">-</span></div>
+                    <button class="btn" onclick="testFirebaseConnection()">🔄 Test Conexión</button>
+                    <button class="btn" onclick="forceFirebaseSync()">⚡ Forzar Sync</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tests de Sincronización -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection(this)">
+                🧪 TESTS DE SINCRONIZACIÓN
+                <span id="testsStatus" class="status info">LISTO</span>
+            </div>
+            <div class="section-content">
+                <button class="btn" onclick="runAllTests()">🚀 Ejecutar Todos los Tests</button>
+                <button class="btn" onclick="testStaffSync()">👥 Test Personal</button>
+                <button class="btn" onclick="testRoomSync()">🏠 Test Habitaciones</button>
+                <button class="btn" onclick="testRealTimeSync()">⚡ Test Tiempo Real</button>
+                <button class="btn" onclick="clearAllData()">🗑️ Limpiar Todo</button>
+                
+                <div id="testResults" class="log"></div>
+            </div>
+        </div>
+
+        <!-- Monitor en Tiempo Real -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection(this)">
+                📊 MONITOR EN TIEMPO REAL
+                <span id="monitorStatus" class="status info">DETENIDO</span>
+            </div>
+            <div class="section-content">
+                <button class="btn" onclick="startMonitoring()">▶️ Iniciar Monitor</button>
+                <button class="btn" onclick="stopMonitoring()">⏹️ Detener Monitor</button>
+                <button class="btn" onclick="clearLog()">🧹 Limpiar Log</button>
+                
+                <div id="realtimeLog" class="log"></div>
+            </div>
+        </div>
+
+        <!-- Datos Almacenados -->
+        <div class="section">
+            <div class="section-header" onclick="toggleSection(this)">
+                💾 DATOS ALMACENADOS
+                <span id="dataStatus" class="status info">-</span>
+            </div>
+            <div class="section-content">
+                <button class="btn" onclick="analyzeStoredData()">🔍 Analizar Datos</button>
+                <button class="btn" onclick="compareLocalVsFirebase()">⚖️ Comparar Local vs Firebase</button>
+                <button class="btn" onclick="exportDiagnostics()">📤 Exportar Diagnóstico</button>
+                
+                <div id="dataAnalysis" class="log"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    
+    <!-- Firebase Sync -->
+    <script src="firebase-sync.js"></script>
+    
+    <script>
+        let monitoringInterval = null;
+        let testResults = [];
+        
+        // Inicialización
+        document.addEventListener('DOMContentLoaded', async () => {
+            await initializeDebugger();
+            updateDeviceInfo();
+            setInterval(updateDeviceInfo, 5000);
+        });
+        
+        async function initializeDebugger() {
+            log('🔧 Inicializando debugger de sincronización...');
+            
+            // Esperar Firebase
+            let attempts = 0;
+            while ((!window.FirebaseSync || !window.FirebaseSync.ready) && attempts < 30) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                attempts++;
+            }
+            
+            updateFirebaseStatus();
+            updateConnectionStatus();
+        }
+        
+        function updateDeviceInfo() {
+            document.getElementById('deviceId').textContent = localStorage.getItem('_deviceId') || 'No asignado';
+            document.getElementById('userAgent').textContent = navigator.userAgent.substring(0, 50) + '...';
+            document.getElementById('platform').textContent = navigator.platform;
+            document.getElementById('networkStatus').textContent = navigator.onLine ? 'Online' : 'Offline';
+            document.getElementById('localStorageStatus').textContent = typeof(Storage) !== "undefined" ? 'Disponible' : 'No disponible';
+            document.getElementById('currentTime').textContent = new Date().toLocaleString();
+        }
+        
+        function updateFirebaseStatus() {
+            const ready = window.FirebaseSync && window.FirebaseSync.ready;
+            const online = ready && window.FirebaseSync.isOnline();
+            const queue = ready ? window.FirebaseSync.getPendingCount() : 0;
+            
+            document.getElementById('fbReady').textContent = ready ? '✅ Listo' : '❌ No disponible';
+            document.getElementById('fbOnline').textContent = online ? '✅ Conectado' : '❌ Desconectado';
+            document.getElementById('fbQueue').textContent = queue + ' elementos pendientes';
+            
+            const status = ready && online ? 'ok' : 'error';
+            document.getElementById('firebaseStatus').className = `status ${status}`;
+            document.getElementById('firebaseStatus').textContent = ready && online ? 'CONECTADO' : 'DESCONECTADO';
+        }
+        
+        function updateConnectionStatus() {
+            const online = navigator.onLine && window.FirebaseSync && window.FirebaseSync.ready && window.FirebaseSync.isOnline();
+            const indicator = document.getElementById('connectionIndicator');
+            const status = document.getElementById('connectionStatus');
+            
+            if (online) {
+                indicator.className = 'indicator online';
+                status.textContent = 'Conectado y sincronizando';
+            } else {
+                indicator.className = 'indicator offline';
+                status.textContent = 'Desconectado o problemas de sync';
+            }
+        }
+        
+        function toggleSection(header) {
+            const section = header.parentElement;
+            section.classList.toggle('active');
+        }
+        
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logElement = document.getElementById('realtimeLog');
+            const colorMap = {
+                'info': '#00ff00',
+                'error': '#ff0000',
+                'warning': '#ffaa00',
+                'success': '#00aa00'
+            };
+            
+            logElement.innerHTML += `<span style="color: ${colorMap[type] || '#00ff00'}">[${timestamp}] ${message}</span>\n`;
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+        
+        function addTestResult(name, status, details = '') {
+            const result = { name, status, details, timestamp: Date.now() };
+            testResults.push(result);
+            
+            const resultsElement = document.getElementById('testResults');
+            const resultDiv = document.createElement('div');
+            resultDiv.className = `test-result ${status}`;
+            resultDiv.innerHTML = `
+                <strong>${name}</strong> - ${status.toUpperCase()}
+                ${details ? `<br><small>${details}</small>` : ''}
+            `;
+            resultsElement.appendChild(resultDiv);
+            resultsElement.scrollTop = resultsElement.scrollHeight;
+        }
+        
+        async function runAllTests() {
+            document.getElementById('testResults').innerHTML = '';
+            testResults = [];
+            
+            log('🚀 Iniciando batería completa de tests...', 'info');
+            
+            await testFirebaseConnection();
+            await testLocalStorage();
+            await testStaffSync();
+            await testRoomSync();
+            await testRealTimeSync();
+            
+            const passed = testResults.filter(t => t.status === 'pass').length;
+            const failed = testResults.filter(t => t.status === 'fail').length;
+            
+            log(`✅ Tests completados: ${passed} exitosos, ${failed} fallidos`, failed > 0 ? 'warning' : 'success');
+        }
+        
+        async function testFirebaseConnection() {
+            log('🔥 Testeando conexión Firebase...', 'info');
+            
+            try {
+                if (!window.FirebaseSync || !window.FirebaseSync.ready) {
+                    addTestResult('Firebase Ready', 'fail', 'FirebaseSync no está disponible');
+                    return;
+                }
+                
+                addTestResult('Firebase Ready', 'pass', 'FirebaseSync inicializado correctamente');
+                
+                // Test de escritura/lectura
+                const testKey = 'debug_test_' + Date.now();
+                const testData = { test: true, timestamp: Date.now() };
+                
+                await window.FirebaseSync.save(testKey, testData);
+                addTestResult('Firebase Write', 'pass', 'Escritura exitosa');
+                
+                const readData = await window.FirebaseSync.load(testKey, null);
+                if (readData && readData.test === true) {
+                    addTestResult('Firebase Read', 'pass', 'Lectura exitosa');
+                } else {
+                    addTestResult('Firebase Read', 'fail', 'Datos no coinciden');
+                }
+                
+                updateFirebaseStatus();
+                
+            } catch (error) {
+                addTestResult('Firebase Connection', 'fail', error.message);
+                log(`❌ Error en test Firebase: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testLocalStorage() {
+            log('💾 Testeando localStorage...', 'info');
+            
+            try {
+                const testKey = 'debug_test_local';
+                const testData = { test: true, timestamp: Date.now() };
+                
+                localStorage.setItem(testKey, JSON.stringify(testData));
+                addTestResult('LocalStorage Write', 'pass', 'Escritura exitosa');
+                
+                const readData = JSON.parse(localStorage.getItem(testKey));
+                if (readData && readData.test === true) {
+                    addTestResult('LocalStorage Read', 'pass', 'Lectura exitosa');
+                } else {
+                    addTestResult('LocalStorage Read', 'fail', 'Datos no coinciden');
+                }
+                
+                localStorage.removeItem(testKey);
+                
+            } catch (error) {
+                addTestResult('LocalStorage Test', 'fail', error.message);
+            }
+        }
+        
+        async function testStaffSync() {
+            log('👥 Testeando sincronización de personal...', 'info');
+            
+            try {
+                // Crear datos de prueba
+                const testStaff = [{
+                    id: Date.now(),
+                    name: 'Test Employee',
+                    shift: 'Día',
+                    workDays: ['monday', 'tuesday'],
+                    attendance: {},
+                    createdAt: Date.now()
+                }];
+                
+                // Guardar en localStorage
+                localStorage.setItem('motelStaffMembers', JSON.stringify(testStaff));
+                addTestResult('Staff LocalStorage', 'pass', 'Guardado en localStorage');
+                
+                // Guardar en Firebase
+                if (window.FirebaseSync && window.FirebaseSync.ready) {
+                    await window.FirebaseSync.save('motelStaffMembers', testStaff);
+                    addTestResult('Staff Firebase Save', 'pass', 'Guardado en Firebase');
+                    
+                    // Verificar lectura
+                    const readStaff = await window.FirebaseSync.load('motelStaffMembers', []);
+                    if (readStaff && readStaff.length > 0 && readStaff[0].name === 'Test Employee') {
+                        addTestResult('Staff Firebase Read', 'pass', 'Lectura exitosa desde Firebase');
+                    } else {
+                        addTestResult('Staff Firebase Read', 'fail', 'Datos no coinciden');
+                    }
+                } else {
+                    addTestResult('Staff Firebase', 'skip', 'Firebase no disponible');
+                }
+                
+            } catch (error) {
+                addTestResult('Staff Sync Test', 'fail', error.message);
+            }
+        }
+        
+        async function testRoomSync() {
+            log('🏠 Testeando sincronización de habitaciones...', 'info');
+            
+            try {
+                // Crear datos de prueba
+                const testRooms = [{
+                    id: 'test_room_' + Date.now(),
+                    number: '999',
+                    status: 'available',
+                    lastUpdated: Date.now()
+                }];
+                
+                // Guardar en localStorage
+                localStorage.setItem('motelRooms', JSON.stringify(testRooms));
+                addTestResult('Rooms LocalStorage', 'pass', 'Guardado en localStorage');
+                
+                // Guardar en Firebase
+                if (window.FirebaseSync && window.FirebaseSync.ready) {
+                    await window.FirebaseSync.save('motelRooms', testRooms);
+                    addTestResult('Rooms Firebase Save', 'pass', 'Guardado en Firebase');
+                    
+                    // Verificar lectura
+                    const readRooms = await window.FirebaseSync.load('motelRooms', []);
+                    if (readRooms && readRooms.length > 0 && readRooms[0].number === '999') {
+                        addTestResult('Rooms Firebase Read', 'pass', 'Lectura exitosa desde Firebase');
+                    } else {
+                        addTestResult('Rooms Firebase Read', 'fail', 'Datos no coinciden');
+                    }
+                } else {
+                    addTestResult('Rooms Firebase', 'skip', 'Firebase no disponible');
+                }
+                
+            } catch (error) {
+                addTestResult('Rooms Sync Test', 'fail', error.message);
+            }
+        }
+        
+        async function testRealTimeSync() {
+            log('⚡ Testeando sincronización en tiempo real...', 'info');
+            
+            try {
+                if (!window.FirebaseSync || !window.FirebaseSync.ready) {
+                    addTestResult('Real-time Sync', 'skip', 'Firebase no disponible');
+                    return;
+                }
+                
+                // Test de listeners
+                let listenerWorking = false;
+                const testKey = 'debug_realtime_test';
+                const testData = { realtime: true, timestamp: Date.now() };
+                
+                // Configurar listener temporal
+                const unsubscribe = window.FirebaseSync.listenAll((key, data) => {
+                    if (key === testKey && data && data.realtime === true) {
+                        listenerWorking = true;
+                        addTestResult('Real-time Listener', 'pass', 'Listener funcionando correctamente');
+                        unsubscribe();
+                    }
+                });
+                
+                // Esperar un momento y luego guardar datos
+                setTimeout(async () => {
+                    await window.FirebaseSync.save(testKey, testData);
+                    
+                    // Verificar si el listener funcionó
+                    setTimeout(() => {
+                        if (!listenerWorking) {
+                            addTestResult('Real-time Listener', 'fail', 'Listener no recibió cambios');
+                        }
+                    }, 2000);
+                }, 1000);
+                
+                addTestResult('Real-time Setup', 'pass', 'Listener configurado');
+                
+            } catch (error) {
+                addTestResult('Real-time Sync Test', 'fail', error.message);
+            }
+        }
+        
+        function startMonitoring() {
+            if (monitoringInterval) return;
+            
+            log('📊 Iniciando monitor en tiempo real...', 'info');
+            document.getElementById('monitorStatus').textContent = 'ACTIVO';
+            document.getElementById('monitorStatus').className = 'status ok';
+            
+            monitoringInterval = setInterval(() => {
+                updateFirebaseStatus();
+                updateConnectionStatus();
+                
+                // Log de estado cada 30 segundos
+                if (Date.now() % 30000 < 1000) {
+                    const online = window.FirebaseSync && window.FirebaseSync.isOnline();
+                    const queue = window.FirebaseSync ? window.FirebaseSync.getPendingCount() : 0;
+                    log(`📊 Estado: ${online ? 'Online' : 'Offline'}, Cola: ${queue}`, online ? 'success' : 'warning');
+                }
+            }, 1000);
+        }
+        
+        function stopMonitoring() {
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+                monitoringInterval = null;
+                log('⏹️ Monitor detenido', 'info');
+                document.getElementById('monitorStatus').textContent = 'DETENIDO';
+                document.getElementById('monitorStatus').className = 'status info';
+            }
+        }
+        
+        function clearLog() {
+            document.getElementById('realtimeLog').innerHTML = '';
+        }
+        
+        async function analyzeStoredData() {
+            log('🔍 Analizando datos almacenados...', 'info');
+            
+            const analysis = document.getElementById('dataAnalysis');
+            analysis.innerHTML = '';
+            
+            const keys = ['motelRooms', 'motelStaffMembers', 'motelUsers', 'motelInventory', 'motelSales'];
+            
+            for (const key of keys) {
+                const localData = localStorage.getItem(key);
+                let firebaseData = null;
+                
+                if (window.FirebaseSync && window.FirebaseSync.ready) {
+                    try {
+                        firebaseData = await window.FirebaseSync.load(key, null);
+                    } catch (error) {
+                        log(`❌ Error cargando ${key} desde Firebase: ${error.message}`, 'error');
+                    }
+                }
+                
+                const localSize = localData ? JSON.parse(localData).length || 0 : 0;
+                const firebaseSize = firebaseData ? (Array.isArray(firebaseData) ? firebaseData.length : 1) : 0;
+                
+                analysis.innerHTML += `
+                    <div style="margin: 10px 0; padding: 10px; border: 1px solid #333;">
+                        <strong>${key}</strong><br>
+                        Local: ${localSize} elementos<br>
+                        Firebase: ${firebaseSize} elementos<br>
+                        Estado: ${localSize === firebaseSize ? '✅ Sincronizado' : '⚠️ Desincronizado'}
+                    </div>
+                `;
+            }
+        }
+        
+        async function compareLocalVsFirebase() {
+            log('⚖️ Comparando localStorage vs Firebase...', 'info');
+            await analyzeStoredData();
+        }
+        
+        function exportDiagnostics() {
+            const diagnostics = {
+                timestamp: new Date().toISOString(),
+                deviceInfo: {
+                    deviceId: localStorage.getItem('_deviceId'),
+                    userAgent: navigator.userAgent,
+                    platform: navigator.platform,
+                    online: navigator.onLine
+                },
+                firebaseStatus: {
+                    ready: window.FirebaseSync && window.FirebaseSync.ready,
+                    online: window.FirebaseSync && window.FirebaseSync.isOnline(),
+                    pendingQueue: window.FirebaseSync ? window.FirebaseSync.getPendingCount() : 0
+                },
+                testResults: testResults,
+                localStorage: {
+                    available: typeof(Storage) !== "undefined",
+                    keys: Object.keys(localStorage).filter(k => k.startsWith('motel') || k.startsWith('_pwd_'))
+                }
+            };
+            
+            const blob = new Blob([JSON.stringify(diagnostics, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `debug-diagnostics-${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            
+            log('📤 Diagnóstico exportado', 'success');
+        }
+        
+        async function forceFirebaseSync() {
+            if (window.FirebaseSync && window.FirebaseSync.syncPending) {
+                const synced = await window.FirebaseSync.syncPending();
+                log(`⚡ Sincronización forzada: ${synced} elementos`, 'success');
+            }
+        }
+        
+        function clearAllData() {
+            if (confirm('⚠️ ¿Estás seguro de que quieres limpiar TODOS los datos? Esta acción no se puede deshacer.')) {
+                const keys = Object.keys(localStorage);
+                keys.forEach(key => {
+                    if (key.startsWith('motel') || key.startsWith('_pwd_') || key === 'currentUser') {
+                        localStorage.removeItem(key);
+                    }
+                });
+                log('🗑️ Todos los datos locales han sido eliminados', 'warning');
+                location.reload();
+            }
+        }
+        
+        // Auto-iniciar monitor
+        setTimeout(startMonitoring, 2000);
+    </script>
+</body>
+</html>

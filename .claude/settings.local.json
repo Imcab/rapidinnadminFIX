@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\chcru\\\\OneDrive\\\\Escritorio\\\\motel-manager - copia\" | Where-Object { $_.Name -ne \"node_modules\" } | Select-Object Name)",
+      "PowerShell(\\(Get-Command vercel -ErrorAction SilentlyContinue\\).Source)",
+      "PowerShell(\\(Get-Content \"c:\\\\Users\\\\chcru\\\\OneDrive\\\\Escritorio\\\\motel-manager - copia\\\\styles.css\" | Measure-Object -Line\\).Lines)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\chcru\\\\OneDrive\\\\Escritorio\\\\motel-manager - copia\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(Sort-Object FullName)",
+      "Bash(node -e ' *)"
+    ]
+  }
+}

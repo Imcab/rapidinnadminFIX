@@ -1,0 +1,1360 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0">
+    <title>Rapid Inn Admin</title>
+    <style>
+        /* Critical CSS - Carga inicial */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; background: #f5f7fa; }
+        
+        /* Ocultar todo hasta que JS verifique la sesión */
+        body { opacity: 0; transition: opacity 0.2s ease-in; }
+        body.loaded { opacity: 1; }
+        
+        .login-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .login-container { background: white; padding: 40px; border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 400px; width: 90%; }
+        .login-header { text-align: center; margin-bottom: 30px; }
+        .login-header h1 { font-size: 28px; color: #2c3e50; margin-bottom: 10px; }
+        .login-header p { color: #7f8c8d; font-size: 14px; }
+        .login-form { display: flex; flex-direction: column; gap: 20px; }
+        .form-group { display: flex; flex-direction: column; gap: 8px; }
+        .form-group label { font-weight: 600; color: #2c3e50; font-size: 14px; }
+        .form-group input { padding: 12px 15px; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 16px; transition: all 0.3s; -webkit-appearance: none; appearance: none; -webkit-tap-highlight-color: transparent; }
+        .form-group input:focus { outline: none; border-color: #667eea; }
+        .btn-login:active { opacity: 0.85; transform: none; }
+        .btn-login { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s; }
+        .btn-login:hover { transform: translateY(-2px); }
+        .login-error { background: #fee; color: #c33; padding: 12px; border-radius: 8px; font-size: 14px; margin-top: 15px; }
+        .login-footer { margin-top: 25px; padding-top: 20px; border-top: 1px solid #e0e0e0; text-align: center; }
+        .login-footer p { color: #7f8c8d; font-size: 13px; margin-bottom: 8px; }
+        .login-footer small { color: #95a5a6; font-size: 12px; display: block; line-height: 1.6; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    </style>
+    <link rel="preload" href="styles.css?v=5.9.9&t=20260512203000" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="styles.css?v=5.9.9&t=20260512203000"></noscript>
+</head>
+<body>
+    <!-- Pantalla de Login -->
+    <div id="loginScreen" class="login-screen">
+        <div class="login-container">
+            <div class="login-header">
+                <h1>🏨 Rapid Inn Admin</h1>
+                <p>Sistema de Gestión Hotelera</p>
+            </div>
+            <form id="loginForm" class="login-form" novalidate>
+                <div class="form-group">
+                    <label for="username">Usuario</label>
+                    <input type="text" id="username" name="username" inputmode="text" placeholder="Ingresa tu usuario" autocomplete="username" maxlength="50" autocorrect="off" autocapitalize="none" spellcheck="false">
+                </div>
+                <div class="form-group">
+                    <label for="password">Contraseña</label>
+                    <input type="password" id="password" name="password" placeholder="Ingresa tu contraseña" autocomplete="current-password">
+                </div>
+                <button type="submit" class="btn-login">Iniciar Sesión</button>
+                <div id="loginError" class="login-error" style="display: none;"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Aplicación Principal -->
+    <div id="mainApp" class="main-app" style="display: none;">
+        <div class="container">
+            <header>
+                <div>
+                    <h1>Rapid Inn Admin</h1>
+                    <span id="userRole" class="user-role-badge"></span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div id="connectionStatus" class="connection-status online" onclick="handleConnectionClick()" style="cursor: pointer;" title="Click para sincronizar">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Conectado</span>
+                        <span class="pending-count" style="display: none;"></span>
+                    </div>
+<div id="currentDate"></div>
+                    <button onclick="logout()" class="btn-logout">Cerrar Sesión</button>
+                </div>
+            </header>
+
+        <nav class="tabs" id="mainTabs">
+            <button class="tab-btn active" data-tab="rooms" data-roles="supervisor,director,recepcion,limpieza">Habitaciones</button>
+            <button class="tab-btn" data-tab="inventory" data-roles="supervisor,director,recepcion">Inventario y Ventas</button>
+            <button class="tab-btn" data-tab="shift-control" data-roles="supervisor,director,recepcion">Control de Turno y Estadísticas</button>
+            <button class="tab-btn" data-tab="announcements" data-roles="supervisor,director,recepcion,limpieza">📢 Avisos</button>
+            <button class="tab-btn" data-tab="monthly-report" data-roles="director">📊 Reporte Mensual</button>
+            <button class="tab-btn" data-tab="user-management" data-roles="director">👥 Gestión de Usuarios</button>
+        </nav>
+
+        <main>
+            <!-- Rooms Tab -->
+            <section id="rooms-tab" class="tab-content active">
+                <!-- Panel de Programación de Limpieza Profunda (Supervisor/Director/Recepción) -->
+                <div class="deep-clean-schedule-panel" data-roles="supervisor,director,recepcion">
+                    <div class="schedule-header">
+                        <div class="schedule-title">
+                            <span class="schedule-icon">🧽</span>
+                            <h3>Programar Limpieza Profunda</h3>
+                        </div>
+                        <button class="btn-schedule-deep-clean" onclick="openDeepCleanScheduleModal()">
+                            <span>📅</span> Nueva Programación
+                        </button>
+                    </div>
+                    <div class="scheduled-cleans-list" id="scheduledCleansList"></div>
+                </div>
+                
+                <!-- Próximas Limpiezas Programadas (Solo Limpieza) -->
+                <div class="upcoming-deep-cleans" id="upcomingDeepCleans" data-roles="limpieza" style="margin: 20px;">
+                    <h2>📅 Limpiezas Profundas Programadas</h2>
+                    <div class="upcoming-cleans-grid" id="upcomingCleansGrid"></div>
+                </div>
+                
+                <div class="rooms-filters-bar" data-roles="supervisor,director,recepcion">
+                    <div class="search-box">
+                        <input type="number" id="roomSearchInput" placeholder="🔍 Buscar habitación por número..." min="1" max="16">
+                    </div>
+                    <div class="filter-buttons">
+                        <button class="filter-btn active" data-filter="all">Todas</button>
+                        <button class="filter-btn" data-filter="available">Disponibles</button>
+                        <button class="filter-btn" data-filter="unavailable">No Disponibles</button>
+                    </div>
+                </div>
+                <div class="rooms-main-container">
+                    <div class="rooms-grid" id="roomsGrid"></div>
+                    <div class="rooms-right-sidebar" data-roles="supervisor,director,recepcion,limpieza">
+                        <!-- Notas de Limpieza -->
+                        <div id="cleaningNotesSidebar" class="sidebar-panel">
+                            <h3>📝 Notas de Limpieza Recientes</h3>
+                            <div id="recentCleaningNotes" class="recent-notes-list"></div>
+                        </div>
+
+                        <!-- Reservas -->
+                        <div id="reservationsSidebar" class="sidebar-panel">
+                            <h3>📌 Reservas</h3>
+                            <form id="reservationForm" class="reservation-form">
+                                <label class="reservation-label" for="reservationRoomSelect">Habitación</label>
+                                <select id="reservationRoomSelect" class="reservation-input" required></select>
+
+                                <label class="reservation-label" for="reservationName">Nombre</label>
+                                <input id="reservationName" class="reservation-input" type="text" placeholder="Nombre de la persona" required maxlength="60">
+
+                                <label class="reservation-label" for="reservationPhone">Teléfono</label>
+                                <input id="reservationPhone" class="reservation-input" type="tel" placeholder="10 dígitos" required maxlength="20">
+
+                                <label class="reservation-label" for="reservationDate">Fecha</label>
+                                <input id="reservationDate" class="reservation-input" type="date" required>
+
+                                <label class="reservation-label" for="reservationTime">Hora</label>
+                                <input id="reservationTime" class="reservation-input" type="time" required>
+
+                                <label class="reservation-label" for="reservationPrice">Precio (obligatorio)</label>
+                                <input id="reservationPrice" class="reservation-input" type="number" placeholder="Ej: 350" required min="0.01" step="0.01">
+
+                                <label class="reservation-label" for="reservationPaymentMethod">Método de pago</label>
+                                <select id="reservationPaymentMethod" class="reservation-input" required>
+                                    <option value="">Seleccionar</option>
+                                    <option value="efectivo">💵 Efectivo</option>
+                                    <option value="tarjeta">💳 Tarjeta</option>
+                                </select>
+
+                                <button id="btnCreateReservation" class="reservation-btn" type="submit">Guardar reserva</button>
+                            </form>
+
+                            <div class="reservations-list-header">
+                                <h4>📋 Reservas Activas</h4>
+                            </div>
+                            <div id="reservationsList" class="reservations-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Announcements Tab -->
+            <section id="announcements-tab" class="tab-content">
+                <!-- Sistema de Avisos del Director -->
+                <div class="announcements-section">
+                    <div class="announcements-header">
+                        <h2>📢 Avisos Generales</h2>
+                        <button id="btnAddAnnouncement" class="announcement-add-btn" data-roles="director">+ Nuevo Aviso</button>
+                    </div>
+                    <div id="announcementsList" class="announcements-list"></div>
+                </div>
+
+                <!-- Sección de Asistencia de Personal (NO visible para limpieza) -->
+                <div class="attendance-section" data-roles="supervisor,director,recepcion">
+                    <div class="attendance-header">
+                        <h3>👥 Asistencia de Personal</h3>
+                        <button id="btnAddStaff" class="attendance-add-btn" data-roles="director">+ Agregar Personal</button>
+                    </div>
+                    <div id="attendanceList"></div>
+                </div>
+            </section>
+
+            <!-- Inventory Tab -->
+            <section id="inventory-tab" class="tab-content">
+                <!-- INVENTARIO Y PUNTO DE VENTA -->
+                <div class="inv-top-grid">
+                    <!-- Panel Inventario -->
+                    <div class="inv-card">
+                        <div class="inv-card-header">
+                            <span class="inv-card-icon">📦</span>
+                            <h2 class="inv-card-title">Inventario</h2>
+                            <button id="addProductBtn" class="inv-btn-add" data-roles="supervisor,director">+ Agregar</button>
+                        </div>
+                        <div class="inv-category-filters">
+                            <button class="inv-filter-btn active" onclick="filterInventoryByCategory('all', this)">Todos</button>
+                            <button class="inv-filter-btn" onclick="filterInventoryByCategory('sex-shop', this)">Sex Shop</button>
+                            <button class="inv-filter-btn" onclick="filterInventoryByCategory('alimentos', this)">Alimentos</button>
+                            <button class="inv-filter-btn" onclick="filterInventoryByCategory('bebidas', this)">Bebidas</button>
+                            <button class="inv-filter-btn" onclick="filterInventoryByCategory('otros', this)">Otros</button>
+                        </div>
+                        <div id="inventoryList" class="inv-list"></div>
+                    </div>
+
+                    <!-- Panel Punto de Venta -->
+                    <div class="inv-card">
+                        <div class="inv-card-header">
+                            <span class="inv-card-icon">🛒</span>
+                            <h2 class="inv-card-title">Punto de Venta</h2>
+                        </div>
+                        <div id="salesForm" class="inv-sales-form">
+                            <select id="productSelect" class="inv-input"></select>
+                            <div class="inv-row">
+                                <input type="number" id="quantityInput" class="inv-input" placeholder="Cantidad" min="1" value="1">
+                                <select id="salePaymentMethod" class="inv-input">
+                                    <option value="">Método de pago</option>
+                                    <option value="efectivo">💵 Efectivo</option>
+                                    <option value="tarjeta">💳 Tarjeta</option>
+                                </select>
+                            </div>
+                            <button id="sellBtn" class="inv-btn-sell">Vender</button>
+                        </div>
+                        <div id="salesLog" class="inv-sales-log"></div>
+                    </div>
+                </div>
+
+                <!-- GASTOS OPERATIVOS -->
+                <div class="inv-expenses-section">
+                    <div class="inv-section-header">
+                        <span>💸</span>
+                        <h2>Gastos Operativos</h2>
+                    </div>
+                    <div class="inv-expenses-grid">
+                        <!-- Formulario -->
+                        <div class="inv-expense-form-card">
+                            <h3 class="inv-sub-title">Registrar Gasto</h3>
+                            <div class="inv-expense-form">
+                                <select id="expenseCategory" class="inv-input">
+                                    <option value="">Seleccionar Categoría</option>
+                                    <option value="operacion">💧 Agua / Luz / Gas</option>
+                                    <option value="alimentos">🍽️ Alimentos y Bebidas</option>
+                                    <option value="limpieza">🧹 Productos de Limpieza</option>
+                                    <option value="sexshop">🛍️ Sex Shop</option>
+                                    <option value="generales">📦 Generales</option>
+                                    <option value="mercadotecnia">📢 Mercadotecnia</option>
+                                    <option value="nomina">💼 Nómina</option>
+                                </select>
+                                <input type="text" id="expenseDescription" class="inv-input" placeholder="Descripción del gasto" maxlength="200">
+                                <input type="number" id="expenseAmount" class="inv-input" placeholder="Monto" step="0.01" min="0">
+                                <select id="expensePaymentMethod" class="inv-input">
+                                    <option value="">Método de Pago</option>
+                                    <option value="efectivo">💵 Efectivo en Caja</option>
+                                    <option value="banco">🏦 Banco / Transferencia</option>
+                                </select>
+                                <button id="addExpenseBtn" class="inv-btn-expense">Registrar Gasto</button>
+                            </div>
+                        </div>
+
+                        <!-- Total egresos -->
+                        <div class="inv-expense-total-card" data-roles="director">
+                            <h3 class="inv-sub-title">Total de Egresos</h3>
+                            <div id="expensesTotalCard" class="inv-total-display"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Log de gastos recientes -->
+                    <div class="inv-expenses-log-section">
+                        <h3 class="inv-sub-title">📋 Gastos Recientes</h3>
+                        <div class="inv-expense-filters">
+                            <button class="inv-filter-btn active" onclick="renderExpensesLog('all')">Todos</button>
+                            <button class="inv-filter-btn" onclick="renderExpensesLog('operacion')">Operación</button>
+                            <button class="inv-filter-btn" onclick="renderExpensesLog('alimentos')">Alimentos</button>
+                            <button class="inv-filter-btn" onclick="renderExpensesLog('limpieza')">Limpieza</button>
+                            <button class="inv-filter-btn" onclick="renderExpensesLog('sexshop')">Sex Shop</button>
+                            <button class="inv-filter-btn" onclick="renderExpensesLog('generales')">Generales</button>
+                            <button class="inv-filter-btn" onclick="renderExpensesLog('mercadotecnia')">Mercadotecnia</button>
+                            <button class="inv-filter-btn" onclick="renderExpensesLog('nomina')">Nómina</button>
+                        </div>
+                        <div id="expensesLog" class="inv-expenses-log"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Pestaña de Control de Turno -->
+            <section id="shift-control-tab" class="tab-content">
+                <div class="sc-page">
+
+                    <!-- ── BLOQUE TURNO ACTUAL ── -->
+                    <div class="sc-top-grid">
+                        <!-- Tarjeta de turno -->
+                        <div class="sc-shift-card">
+                            <div class="sc-shift-badge" id="scShiftBadge">TURNO DÍA</div>
+                            <div class="sc-shift-time" id="scShiftTime">6:00 AM – 6:00 PM</div>
+                            <div class="sc-shift-elapsed" id="shiftTimer">0h 0m transcurridos</div>
+                        </div>
+
+                        <!-- Tarjeta ingreso total -->
+                        <div class="sc-kpi-card sc-kpi-green">
+                            <div class="sc-kpi-icon">💰</div>
+                            <div class="sc-kpi-value" id="quickTotalRevenue">$0.00</div>
+                            <div class="sc-kpi-label">Ingresos netos del turno</div>
+                        </div>
+
+                        <!-- Tarjeta habitaciones sucias -->
+                        <div class="sc-kpi-card sc-kpi-blue sc-clickable" onclick="openRoomsActivityModal('dirty')">
+                            <div class="sc-kpi-icon">🧹</div>
+                            <div class="sc-kpi-value" id="scDirtyKpi">0</div>
+                            <div class="sc-kpi-label">Habitaciones sucias</div>
+                            <div class="sc-kpi-hint">Ver detalle →</div>
+                        </div>
+                    </div>
+
+                    <!-- ── DESGLOSE DE INGRESOS ── -->
+                    <div class="sc-section">
+                        <div class="sc-section-title">💵 Desglose del turno</div>
+                        <div class="sc-income-grid">
+                            <div class="sc-income-card sc-income-rooms sc-clickable" onclick="openRevenueDetail('rooms')">
+                                <div class="sc-income-icon">🏠</div>
+                                <div class="sc-income-body">
+                                    <div class="sc-income-label">Habitaciones</div>
+                                    <div class="sc-income-value" id="revenueRooms">$0.00</div>
+                                    <div class="sc-income-sub" id="revenueRoomsCount">0 rentas</div>
+                                </div>
+                            </div>
+                            <div class="sc-income-card sc-income-sales sc-clickable" onclick="openRevenueDetail('sales')">
+                                <div class="sc-income-icon">🛒</div>
+                                <div class="sc-income-body">
+                                    <div class="sc-income-label">Ventas inventario</div>
+                                    <div class="sc-income-value" id="revenueSales">$0.00</div>
+                                    <div class="sc-income-sub" id="revenueSalesCount">0 transacciones</div>
+                                </div>
+                            </div>
+                            <div class="sc-income-card sc-income-expenses sc-clickable" onclick="openRevenueDetail('expenses')">
+                                <div class="sc-income-icon">💸</div>
+                                <div class="sc-income-body">
+                                    <div class="sc-income-label">Egresos</div>
+                                    <div class="sc-income-value" id="revenueExpenses">$0.00</div>
+                                    <div class="sc-income-sub" id="revenueExpensesCount">0 gastos</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── CORTE POR MÉTODO DE PAGO ── -->
+                    <div class="sc-section">
+                        <div class="sc-section-title">💳 Corte por método de pago</div>
+                        <div class="sc-payment-grid">
+                            <div class="sc-pay-card sc-pay-cash sc-clickable" onclick="openPaymentMethodModal('efectivo')">
+                                <div class="sc-pay-icon">💵</div>
+                                <div class="sc-pay-label">Efectivo</div>
+                                <div class="sc-pay-value" id="paymentEfectivo">$0.00</div>
+                            </div>
+                            <div class="sc-pay-card sc-pay-card-card sc-clickable" onclick="openPaymentMethodModal('tarjeta')">
+                                <div class="sc-pay-icon">💳</div>
+                                <div class="sc-pay-label">Tarjeta</div>
+                                <div class="sc-pay-value" id="paymentTarjeta">$0.00</div>
+                            </div>
+                            <div class="sc-pay-card sc-pay-total sc-clickable" onclick="openPaymentMethodModal('todos')">
+                                <div class="sc-pay-icon">💰</div>
+                                <div class="sc-pay-label">Total cobrado</div>
+                                <div class="sc-pay-value" id="paymentTotal">$0.00</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── ACTIVIDAD RECIENTE ── -->
+                    <div class="sc-section">
+                        <div class="sc-section-title">⚡ Actividad reciente del turno</div>
+                        <div id="scRecentActivity" class="sc-activity-list">
+                            <div class="sc-no-activity">Sin actividad registrada aún</div>
+                        </div>
+                    </div>
+
+                    <!-- ── ACCIONES DE TURNO ── -->
+                    <div class="sc-actions-row" data-roles="director,recepcion">
+                        <button class="sc-btn-close-shift" onclick="closeShift()">
+                            🔒 Cerrar turno y generar reporte
+                        </button>
+                        <button class="sc-btn-history" onclick="openShiftHistoryModal()">
+                            📋 Historial de turnos
+                        </button>
+                    </div>
+
+                    <!-- ── ESTADÍSTICAS (solo director) ── -->
+                    <div class="sc-stats-section" data-roles="director">
+                        <div class="sc-stats-title">📈 Estadísticas generales</div>
+
+                        <div class="sc-stats-grid">
+                            <!-- Estado habitaciones -->
+                            <div class="sc-stat-card">
+                                <div class="sc-stat-card-title">🏠 Estado de habitaciones</div>
+                                <div id="roomStats"></div>
+                            </div>
+
+                            <!-- Ingresos habitaciones -->
+                            <div class="sc-stat-card">
+                                <div class="sc-stat-card-title">💰 Ingresos por habitaciones</div>
+                                <div class="sc-period-tabs">
+                                    <button class="sc-period-btn active" onclick="scSetPeriod(this,'roomRevenue','day')">Turno</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'roomRevenue','week')">Semana</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'roomRevenue','month')">Mes</button>
+                                </div>
+                                <div id="roomRevenueSummary"></div>
+                            </div>
+
+                            <!-- Ingresos inventario -->
+                            <div class="sc-stat-card">
+                                <div class="sc-stat-card-title">🛒 Ingresos por inventario</div>
+                                <div class="sc-period-tabs">
+                                    <button class="sc-period-btn active" onclick="scSetPeriod(this,'salesRevenue','day')">Turno</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'salesRevenue','week')">Semana</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'salesRevenue','month')">Mes</button>
+                                </div>
+                                <div id="revenueStats"></div>
+                            </div>
+
+                            <!-- Gastos por método de pago -->
+                            <div class="sc-stat-card">
+                                <div class="sc-stat-card-title">💳 Gastos por método de pago</div>
+                                <div class="sc-period-tabs">
+                                    <button class="sc-period-btn active" onclick="scSetPeriod(this,'expensesByPayment','day')">Turno</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'expensesByPayment','week')">Semana</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'expensesByPayment','month')">Mes</button>
+                                </div>
+                                <div id="expensesByPaymentStats"></div>
+                            </div>
+
+                            <!-- Gastos por categoría -->
+                            <div class="sc-stat-card">
+                                <div class="sc-stat-card-title">📊 Gastos por categoría</div>
+                                <div class="sc-period-tabs">
+                                    <button class="sc-period-btn active" onclick="scSetPeriod(this,'expensesByCategory','day')">Turno</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'expensesByCategory','week')">Semana</button>
+                                    <button class="sc-period-btn" onclick="scSetPeriod(this,'expensesByCategory','month')">Mes</button>
+                                </div>
+                                <div id="expensesByCategoryStats"></div>
+                            </div>
+
+                            <!-- Top productos -->
+                            <div class="sc-stat-card">
+                                <div class="sc-stat-card-title">🏆 Top productos</div>
+                                <div class="sc-period-tabs">
+                                    <button class="sc-period-btn active" data-period="day" data-type="products">Turno</button>
+                                    <button class="sc-period-btn" data-period="week" data-type="products">Semana</button>
+                                    <button class="sc-period-btn" data-period="month" data-type="products">Mes</button>
+                                </div>
+                                <div id="productStats"></div>
+                            </div>
+
+                            <!-- Top habitaciones -->
+                            <div class="sc-stat-card">
+                                <div class="sc-stat-card-title">🏆 Top habitaciones</div>
+                                <div class="sc-period-tabs">
+                                    <button class="sc-period-btn active" data-period="day" data-type="rooms">Turno</button>
+                                    <button class="sc-period-btn" data-period="week" data-type="rooms">Semana</button>
+                                    <button class="sc-period-btn" data-period="month" data-type="rooms">Mes</button>
+                                </div>
+                                <div id="roomUsageStats"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </section>
+
+            <!-- Reporte Mensual Tab (Solo Director) -->
+            <section id="monthly-report-tab" class="tab-content">
+                <div class="monthly-report-container">
+                    <div class="monthly-report-header">
+                        <div>
+                            <h2>📊 Reporte Mensual</h2>
+                            <p class="monthly-report-subtitle">Del día 1 (turno matutino) al día 30 (última venta del turno noche)</p>
+                        </div>
+                        <div class="monthly-report-actions">
+                            <div class="month-selector">
+                                <select id="reportMonth" onchange="onMonthYearChange()"></select>
+                                <select id="reportYear" onchange="onMonthYearChange()"></select>
+                            </div>
+                            <button class="btn-download-excel" onclick="downloadMonthlyExcel()">📥 Descargar Excel</button>
+                        </div>
+                    </div>
+
+                    <!-- GESTIÓN DE NÓMINA POR SEMANAS -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">💼 Gestión de Nómina por Semanas</div>
+                        
+                        <!-- Selector de semana -->
+                        <div class="week-selector-container">
+                            <div class="week-selector">
+                                <label for="weekSelector">Seleccionar Semana:</label>
+                                <select id="weekSelector" onchange="onWeekChange()" class="mr-input">
+                                    <option value="0">Todo el mes</option>
+                                    <option value="1">Semana 1</option>
+                                    <option value="2">Semana 2</option>
+                                    <option value="3">Semana 3</option>
+                                    <option value="4">Semana 4</option>
+                                    <option value="5">Semana 5</option>
+                                </select>
+                                <span id="weekDateRange" class="week-date-range"></span>
+                            </div>
+                            <button class="btn-mr-add" onclick="openPayrollModal()">+ Añadir Empleado</button>
+                        </div>
+
+                        <!-- Resumen de nómina por semana -->
+                        <div id="weeklyPayrollSummary" class="weekly-payroll-summary">
+                            <div class="payroll-summary-grid">
+                                <div class="payroll-summary-card">
+                                    <div class="summary-title">Semana 1</div>
+                                    <div class="summary-amount" id="week1Total">$0.00</div>
+                                    <div class="summary-dates" id="week1Dates"></div>
+                                </div>
+                                <div class="payroll-summary-card">
+                                    <div class="summary-title">Semana 2</div>
+                                    <div class="summary-amount" id="week2Total">$0.00</div>
+                                    <div class="summary-dates" id="week2Dates"></div>
+                                </div>
+                                <div class="payroll-summary-card">
+                                    <div class="summary-title">Semana 3</div>
+                                    <div class="summary-amount" id="week3Total">$0.00</div>
+                                    <div class="summary-dates" id="week3Dates"></div>
+                                </div>
+                                <div class="payroll-summary-card">
+                                    <div class="summary-title">Semana 4</div>
+                                    <div class="summary-amount" id="week4Total">$0.00</div>
+                                    <div class="summary-dates" id="week4Dates"></div>
+                                </div>
+                                <div class="payroll-summary-card" id="week5Card" style="display:none;">
+                                    <div class="summary-title">Semana 5</div>
+                                    <div class="summary-amount" id="week5Total">$0.00</div>
+                                    <div class="summary-dates" id="week5Dates"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Lista de empleados de la semana seleccionada -->
+                        <div class="weekly-employees-list">
+                            <h4 id="weeklyEmployeesTitle">Empleados del Mes</h4>
+                            <div class="employees-grid" id="weeklyEmployeesGrid"></div>
+                        </div>
+                    </div>
+
+                    <!-- TABLA DE INGRESOS DIARIOS (formato Excel Lili) -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">📅 Ingresos Diarios del Mes</div>
+                        <div class="mr-daily-table-wrapper">
+                            <table class="mr-daily-table" id="mr-daily-table">
+                                <thead>
+                                    <tr>
+                                        <th>Día</th>
+                                        <th>Fecha</th>
+                                        <th>Turno</th>
+                                        <th>Regulares</th>
+                                        <th>Torre</th>
+                                        <th>Total Hab.</th>
+                                        <th>Efectivo</th>
+                                        <th>Tarjeta</th>
+                                        <th>Ingresos Hab.</th>
+                                        <th>Consumos</th>
+                                        <th>Ganancia</th>
+                                    </tr>
+                                </thead>
+                                <!-- Fila de totales arriba (duplicada para mejor visibilidad) -->
+                                <thead class="mr-totals-top">
+                                    <tr class="mr-daily-total-row">
+                                        <td colspan="3"><strong>TOTALES DEL MES</strong></td>
+                                        <td id="mr-tot-regulares-top">0</td>
+                                        <td id="mr-tot-torre-top">0</td>
+                                        <td id="mr-tot-hab-top">0</td>
+                                        <td id="mr-tot-efectivo-top"></td>
+                                        <td id="mr-tot-tarjeta-top"></td>
+                                        <td id="mr-tot-ingresos-hab-top"></td>
+                                        <td id="mr-tot-consumos-top"></td>
+                                        <td id="mr-tot-total-top"></td>
+                                    </tr>
+                                </thead>
+                                <tbody id="mr-daily-tbody"></tbody>
+                                <tfoot>
+                                    <tr class="mr-daily-total-row">
+                                        <td colspan="3"><strong>TOTALES DEL MES</strong></td>
+                                        <td id="mr-tot-regulares">0</td>
+                                        <td id="mr-tot-torre">0</td>
+                                        <td id="mr-tot-hab">0</td>
+                                        <td id="mr-tot-efectivo"></td>
+                                        <td id="mr-tot-tarjeta"></td>
+                                        <td id="mr-tot-ingresos-hab"></td>
+                                        <td id="mr-tot-consumos"></td>
+                                        <td id="mr-tot-total"></td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- INGRESOS POR VENTAS -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">💰 Resumen de Ingresos</div>
+                        <div class="mr-row mr-row-header">
+                            <span>Concepto</span><span>Monto</span>
+                        </div>
+                        <div class="mr-row">
+                            <span>Total mensual de habitaciones</span>
+                            <span id="mr-rooms-total" class="mr-value">$0.00</span>
+                        </div>
+                        <div class="mr-row">
+                            <span>Ingreso en efectivo (habitaciones)</span>
+                            <span id="mr-rooms-efectivo" class="mr-value">$0.00</span>
+                        </div>
+                        <div class="mr-row mr-row-note">
+                            <span>Ingreso a banco (habitaciones) <span class="mr-badge-note" title="Este apartado no se suma con el efectivo">ℹ</span></span>
+                            <span id="mr-rooms-banco" class="mr-value mr-value-bank">$0.00</span>
+                        </div>
+                        <div class="mr-row">
+                            <span>Ventas de inventario / consumos (efectivo)</span>
+                            <span id="mr-sales-efectivo" class="mr-value">$0.00</span>
+                        </div>
+                        <div class="mr-row mr-row-note">
+                            <span>Ventas de inventario (banco) <span class="mr-badge-note" title="Este apartado no se suma con el efectivo">ℹ</span></span>
+                            <span id="mr-sales-banco" class="mr-value mr-value-bank">$0.00</span>
+                        </div>
+                        <div class="mr-row mr-row-total">
+                            <span>TOTAL INGRESOS (efectivo)</span>
+                            <span id="mr-total-ingresos" class="mr-value">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- GASTOS OPERATIVOS DIRECTOS -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">📉 Gastos Operativos — DIRECTOS</div>
+                        <div class="mr-row mr-row-header">
+                            <span>Concepto</span><span>Fecha</span><span>Monto</span><span>Acumulado</span><span></span>
+                        </div>
+                        <div id="mr-direct-expenses-list"></div>
+
+                        <!-- Agregar gasto directo manual -->
+                        <div class="mr-add-expense-row">
+                            <select id="mr-direct-category" class="mr-input" onchange="toggleSalaryFields()">
+                                <option value="">Categoría</option>
+                                <option value="agua">💧 Agua</option>
+                                <option value="gas">🔥 Gas</option>
+                                <option value="luz">💡 Luz</option>
+                                <option value="limpieza">🧹 Productos de limpieza</option>
+                                <option value="inversiones_alimentos">🍽️ Inversiones - Alimentos y bebidas</option>
+                                <option value="inversiones_sexshop">🛍️ Inversiones - Sex Shop</option>
+                                <option value="salarios">💼 Salarios</option>
+                                <option value="otros">📦 Otros gastos</option>
+                            </select>
+                            <!-- Campos normales -->
+                            <span id="mr-direct-normal-fields" style="display:contents;">
+                                <input type="text" id="mr-direct-concept" class="mr-input" placeholder="Concepto" maxlength="100">
+                                <input type="date" id="mr-direct-date" class="mr-input">
+                                <input type="number" id="mr-direct-amount" class="mr-input" placeholder="Monto" step="0.01" min="0">
+                            </span>
+                            <!-- Campos de salario -->
+                            <span id="mr-direct-salary-fields" style="display:none;">
+                                <input type="text" id="mr-salary-name" class="mr-input" placeholder="Nombre completo" maxlength="100">
+                                <input type="date" id="mr-salary-date" class="mr-input">
+                                <input type="number" id="mr-salary-tarifa" class="mr-input" placeholder="Tarifa por día" step="0.01" min="0">
+                                <input type="number" id="mr-salary-neto" class="mr-input" placeholder="Salario neto" step="0.01" min="0">
+                            </span>
+                            <button class="btn-mr-add" onclick="addMrDirectExpense()">+ Agregar</button>
+                        </div>
+
+                        <div class="mr-row mr-row-subtotal">
+                            <span>Subtotal Gastos Directos</span>
+                            <span id="mr-direct-subtotal" class="mr-value">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- GASTOS OPERATIVOS INDIRECTOS -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">📉 Gastos Operativos — INDIRECTOS</div>
+                        <div class="mr-row mr-row-header">
+                            <span>Concepto</span><span>Fecha</span><span>Monto</span><span>Acumulado</span><span></span>
+                        </div>
+                        <div id="mr-indirect-expenses-list"></div>
+                        <div class="mr-add-expense-row">
+                            <select id="mr-indirect-category" class="mr-input">
+                                <option value="">Categoría</option>
+                                <option value="mercadotecnia_i">📢 Mercadotecnia</option>
+                                <option value="administracion">🗂️ Administración</option>
+                                <option value="mantenimiento">🔧 Mantenimiento</option>
+                            </select>
+                            <input type="text" id="mr-indirect-concept" class="mr-input" placeholder="Concepto" maxlength="100">
+                            <input type="date" id="mr-indirect-date" class="mr-input">
+                            <input type="number" id="mr-indirect-amount" class="mr-input" placeholder="Monto" step="0.01" min="0">
+                            <button class="btn-mr-add" onclick="addMrIndirectExpense()">+ Agregar</button>
+                        </div>
+                        <div class="mr-row mr-row-subtotal">
+                            <span>Subtotal Gastos Indirectos</span>
+                            <span id="mr-indirect-subtotal" class="mr-value">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- UTILIDAD BRUTA -->
+                    <div class="mr-section mr-section-result">
+                        <div class="mr-row mr-row-result">
+                            <span>= UTILIDAD BRUTA</span>
+                            <span id="mr-utilidad-bruta" class="mr-value mr-value-result">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- INVERSIONES Y GASTOS NO OPERATIVOS -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">📉 Inversiones y Gastos No Operativos</div>
+                        <div class="mr-row mr-row-header">
+                            <span>Concepto</span><span>Fecha</span><span>Monto</span><span>Acumulado</span><span></span>
+                        </div>
+                        <div id="mr-nonop-expenses-list"></div>
+                        <div class="mr-add-expense-row">
+                            <input type="text" id="mr-nonop-concept" class="mr-input" placeholder="Concepto (ej: pago crédito bancario)" maxlength="100">
+                            <input type="date" id="mr-nonop-date" class="mr-input">
+                            <input type="number" id="mr-nonop-amount" class="mr-input" placeholder="Monto" step="0.01" min="0">
+                            <button class="btn-mr-add" onclick="addMrNonOpExpense()">+ Agregar</button>
+                        </div>
+                        <div class="mr-row mr-row-subtotal">
+                            <span>Subtotal No Operativos</span>
+                            <span id="mr-nonop-subtotal" class="mr-value">$0.00</span>
+                        </div>
+                        <div class="mr-row mr-row-subtotal">
+                            <span>Subtotal Inversiones (incluidas en Directos)</span>
+                            <span id="mr-inversiones-subtotal" class="mr-value">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- UTILIDAD NETA -->
+                    <div class="mr-section mr-section-result mr-section-neta">
+                        <div class="mr-row mr-row-result">
+                            <span>= UTILIDAD NETA</span>
+                            <span id="mr-utilidad-neta" class="mr-value mr-value-result">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- EFECTIVO -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">💵 Efectivo</div>
+                        <div class="mr-row">
+                            <span>Efectivo mes anterior</span>
+                            <input type="text" inputmode="decimal" id="mr-efectivo-anterior" class="mr-input-inline" placeholder="0.00" autocomplete="off" oninput="mrSaldoAnteriorInput(true)">
+                        </div>
+                        <div class="mr-row">
+                            <span>Más: Utilidad neta del mes</span>
+                            <span id="mr-efectivo-utilidad" class="mr-value">$0.00</span>
+                        </div>
+                        <div class="mr-row mr-row-header mr-row-header-mov">
+                            <span>Fecha</span><span>Concepto</span><span>(+) Ingresos</span><span>(-) Egresos</span><span></span>
+                        </div>
+                        <div class="mr-movimientos-toolbar">
+                            <input type="search" class="mr-mov-filter-input" id="mr-efectivo-mov-filter" placeholder="Buscar en movimientos…" autocomplete="off" oninput="filterMrMovimientos('efectivo')">
+                            <select class="mr-mov-filter-select" id="mr-efectivo-mov-filter-type" onchange="filterMrMovimientos('efectivo')">
+                                <option value="all">Todos</option>
+                                <option value="in">Solo ingresos</option>
+                                <option value="out">Solo egresos</option>
+                                <option value="auto">Solo automáticos</option>
+                                <option value="manual">Solo manuales</option>
+                            </select>
+                        </div>
+                        <div class="mr-movimientos-scroll">
+                            <div id="mr-efectivo-movimientos-list"></div>
+                        </div>
+                        <div class="mr-add-expense-row">
+                            <input type="date" id="mr-efec-date" class="mr-input">
+                            <input type="text" id="mr-efec-concept" class="mr-input" placeholder="Concepto" maxlength="100">
+                            <input type="number" id="mr-efec-ingreso" class="mr-input" placeholder="(+) Ingreso" step="0.01" min="0">
+                            <input type="number" id="mr-efec-egreso" class="mr-input" placeholder="(-) Egreso" step="0.01" min="0">
+                            <button class="btn-mr-add" onclick="addMrEfectivoMovimiento()">+ Agregar</button>
+                        </div>
+                        <div class="mr-row mr-row-total">
+                            <span>TOTAL EFECTIVO AL CIERRE DEL MES</span>
+                            <span id="mr-efectivo-total" class="mr-value">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- BANCO -->
+                    <div class="mr-section">
+                        <div class="mr-section-title">🏦 Banco</div>
+                        <div class="mr-row">
+                            <span>Monto mes anterior (banco)</span>
+                            <input type="text" inputmode="decimal" id="mr-banco-anterior" class="mr-input-inline" placeholder="0.00" autocomplete="off" oninput="mrSaldoAnteriorInput(false)">
+                        </div>
+                        <div class="mr-row mr-row-note">
+                            <span>Más: Ingresos a banco del mes (habitaciones + ventas)</span>
+                            <span id="mr-banco-ingresos" class="mr-value mr-value-bank">$0.00</span>
+                        </div>
+                        <div class="mr-row mr-row-header mr-row-header-mov">
+                            <span>Fecha</span><span>Concepto</span><span>(+) Ingresos</span><span>(-) Egresos</span><span></span>
+                        </div>
+                        <div class="mr-movimientos-toolbar">
+                            <input type="search" class="mr-mov-filter-input" id="mr-banco-mov-filter" placeholder="Buscar en movimientos…" autocomplete="off" oninput="filterMrMovimientos('banco')">
+                            <select class="mr-mov-filter-select" id="mr-banco-mov-filter-type" onchange="filterMrMovimientos('banco')">
+                                <option value="all">Todos</option>
+                                <option value="in">Solo ingresos</option>
+                                <option value="out">Solo egresos</option>
+                                <option value="auto">Solo automáticos</option>
+                                <option value="manual">Solo manuales</option>
+                            </select>
+                        </div>
+                        <div class="mr-movimientos-scroll">
+                            <div id="mr-banco-movimientos-list"></div>
+                        </div>
+                        <div class="mr-add-expense-row">
+                            <input type="date" id="mr-banco-date" class="mr-input">
+                            <input type="text" id="mr-banco-concept" class="mr-input" placeholder="Concepto" maxlength="100">
+                            <input type="number" id="mr-banco-ingreso" class="mr-input" placeholder="(+) Ingreso" step="0.01" min="0">
+                            <input type="number" id="mr-banco-egreso" class="mr-input" placeholder="(-) Egreso" step="0.01" min="0">
+                            <button class="btn-mr-add" onclick="addMrBancoMovimiento()">+ Agregar</button>
+                        </div>
+                        <div class="mr-row mr-row-total">
+                            <span>TOTAL EN BANCOS AL CIERRE DEL MES</span>
+                            <span id="mr-banco-total" class="mr-value">$0.00</span>
+                        </div>
+                    </div>
+
+                </div>
+            </section>
+
+            <!-- Gestión de Usuarios Tab (Solo Director) -->
+            <section id="user-management-tab" class="tab-content">
+                <div class="user-management-container">
+                    <div class="user-management-header">
+                        <div>
+                            <h2>👥 Gestión de Usuarios</h2>
+                            <p class="user-management-subtitle">Administra las contraseñas de todos los usuarios del sistema</p>
+                        </div>
+                    </div>
+
+                    <!-- Lista de usuarios -->
+                    <div class="users-section">
+                        <div class="users-section-title">
+                            <span>👤</span>
+                            <h3>Usuarios del Sistema</h3>
+                        </div>
+                        <div id="usersList" class="users-list"></div>
+                    </div>
+
+                    <!-- Información de seguridad -->
+                    <div class="security-info">
+                        <div class="security-info-icon">🔒</div>
+                        <div class="security-info-content">
+                            <h4>Seguridad de Contraseñas</h4>
+                            <p>Las contraseñas están protegidas con encriptación SHA-256. Solo el director puede cambiar las contraseñas de los usuarios.</p>
+                            <ul>
+                                <li>✓ Las contraseñas deben tener al menos 6 caracteres</li>
+                                <li>✓ Los cambios se sincronizan automáticamente con todos los dispositivos</li>
+                                <li>✓ Cada cambio queda registrado en el historial de actividad</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Modal de Habitación -->
+    <div id="roomModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Habitación <span id="modalRoomNumber"></span></h2>
+            <div id="roomDetails"></div>
+            <div class="modal-actions" id="modalActions">
+                <button class="btn" data-action="occupied" data-roles="supervisor,director,recepcion">Marcar Ocupado</button>
+                <button class="btn" data-action="available" data-roles="supervisor,director,recepcion,limpieza">Marcar Disponible</button>
+                <button class="btn" data-action="dirty" data-roles="supervisor,director,recepcion">Marcar Sucio</button>
+                <button class="btn" data-action="not-available" data-roles="supervisor,director,recepcion">Marcar No Disponible</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Producto -->
+    <div id="productModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Agregar Producto</h2>
+            <div class="form-group">
+                <label for="productName">Nombre del Producto</label>
+                <input type="text" id="productName" placeholder="Ej: Agua, Refresco, Snack" maxlength="100">
+            </div>
+            <div class="form-group">
+                <label for="productCategory">Categoría</label>
+                <select id="productCategory" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                    <option value="bebidas">Bebidas</option>
+                    <option value="alimentos">Alimentos</option>
+                    <option value="sex-shop">Sex Shop</option>
+                    <option value="otros">Otros</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="productQuantity">Cantidad</label>
+                <input type="number" id="productQuantity" placeholder="0" min="0">
+            </div>
+            <div class="form-group">
+                <label for="productPrice">Precio</label>
+                <input type="number" id="productPrice" placeholder="0.00" min="0" step="0.01">
+            </div>
+            <button id="saveProductBtn" class="btn-primary">Guardar</button>
+        </div>
+    </div>
+
+    <!-- Modal de Agregar/Editar Personal -->
+    <div id="staffModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2 id="staffModalTitle">👥 Agregar Personal</h2>
+            <input type="hidden" id="staffId" value="">
+            <div class="form-group">
+                <label for="staffName">Nombre Completo</label>
+                <input type="text" id="staffName" placeholder="Ej: Juan Pérez" maxlength="60" required>
+            </div>
+            <div class="form-group">
+                <label for="staffShift">Turno</label>
+                <select id="staffShift" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                    <option value="">Seleccionar turno</option>
+                    <option value="Día">☀️ Día (6:00 AM - 6:00 PM)</option>
+                    <option value="Noche">🌙 Noche (6:00 PM - 6:00 AM)</option>
+                    <option value="Fin de Semana Día">🌞 Fin de Semana Día (6:00 AM - 6:00 PM)</option>
+                    <option value="Fin de Semana Noche">🌜 Fin de Semana Noche (6:00 PM - 6:00 AM)</option>
+                </select>
+            </div>
+            
+            <!-- NUEVO: Calendario de días de trabajo -->
+            <div class="form-group">
+                <label>📅 Días de Trabajo</label>
+                <div class="work-days-calendar">
+                    <div class="calendar-day" data-day="monday">
+                        <input type="checkbox" id="workDay-monday" value="monday">
+                        <label for="workDay-monday">Lun</label>
+                    </div>
+                    <div class="calendar-day" data-day="tuesday">
+                        <input type="checkbox" id="workDay-tuesday" value="tuesday">
+                        <label for="workDay-tuesday">Mar</label>
+                    </div>
+                    <div class="calendar-day" data-day="wednesday">
+                        <input type="checkbox" id="workDay-wednesday" value="wednesday">
+                        <label for="workDay-wednesday">Mié</label>
+                    </div>
+                    <div class="calendar-day" data-day="thursday">
+                        <input type="checkbox" id="workDay-thursday" value="thursday">
+                        <label for="workDay-thursday">Jue</label>
+                    </div>
+                    <div class="calendar-day" data-day="friday">
+                        <input type="checkbox" id="workDay-friday" value="friday">
+                        <label for="workDay-friday">Vie</label>
+                    </div>
+                    <div class="calendar-day" data-day="saturday">
+                        <input type="checkbox" id="workDay-saturday" value="saturday">
+                        <label for="workDay-saturday">Sáb</label>
+                    </div>
+                    <div class="calendar-day" data-day="sunday">
+                        <input type="checkbox" id="workDay-sunday" value="sunday">
+                        <label for="workDay-sunday">Dom</label>
+                    </div>
+                </div>
+                <small style="color: #666; font-size: 12px;">Selecciona los días que trabajará esta persona</small>
+            </div>
+            
+            <button id="saveStaffBtn" class="btn-primary">Guardar Personal</button>
+        </div>
+    </div>
+
+    <!-- Modal de Agregar Aviso -->
+    <div id="announcementModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>📢 Nuevo Aviso</h2>
+            <div class="form-group">
+                <label for="announcementTitle">Título del Aviso</label>
+                <input type="text" id="announcementTitle" placeholder="Ej: Cambio de horario" maxlength="100" required>
+            </div>
+            <div class="form-group">
+                <label for="announcementMessage">Mensaje</label>
+                <textarea id="announcementMessage" placeholder="Escribe el mensaje del aviso..." maxlength="500" rows="4" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; resize: vertical;" required></textarea>
+            </div>
+            <div class="form-group">
+                <label for="announcementPriority">Prioridad</label>
+                <select id="announcementPriority" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                    <option value="normal">📌 Normal</option>
+                    <option value="important">⚠️ Importante</option>
+                    <option value="urgent">🚨 Urgente</option>
+                </select>
+            </div>
+            <button id="saveAnnouncementBtn" class="btn-primary">Publicar Aviso</button>
+        </div>
+    </div>
+
+    <!-- Modal de Confirmación de Limpieza -->
+    <div id="cleaningModal" class="modal">
+        <div class="modal-content cleaning-modal-content">
+            <span class="close">&times;</span>
+            <h2>🧹 Confirmar Limpieza</h2>
+            <div id="cleaningDetails" class="cleaning-details"></div>
+            <div class="cleaning-modal-actions">
+                <button id="confirmCleanBtn" class="btn-confirm-clean">✓ Confirmar Limpieza</button>
+                <button id="cancelCleanBtn" class="btn-cancel">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Confirmación Personalizado -->
+    <div id="customConfirmModal" class="modal">
+        <div class="modal-content custom-confirm-content">
+            <h2 id="confirmTitle">Confirmar</h2>
+            <div id="confirmMessage" class="confirm-message"></div>
+            <div class="confirm-actions">
+                <button id="confirmYesBtn" class="btn-confirm">Aceptar</button>
+                <button id="confirmNoBtn" class="btn-cancel">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Alerta Personalizado -->
+    <div id="customAlertModal" class="modal">
+        <div class="modal-content custom-alert-content">
+            <h2 id="alertTitle">Información</h2>
+            <div id="alertMessage" class="alert-message"></div>
+            <div class="alert-actions">
+                <button id="alertOkBtn" class="btn-primary">Aceptar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Programación de Limpieza Profunda -->
+    <div id="deepCleanScheduleModal" class="modal">
+        <div class="modal-content deep-clean-schedule-modal">
+            <span class="close" onclick="closeDeepCleanScheduleModal()">&times;</span>
+            <h2>🧽 Programar Limpieza Profunda</h2>
+            
+            <div class="schedule-form">
+                <div class="form-section">
+                    <label for="deepCleanDate">📅 Fecha de Limpieza</label>
+                    <input type="date" id="deepCleanDate" class="schedule-input" required>
+                </div>
+                
+                <div class="form-section">
+                    <label for="deepCleanTime">🕐 Hora</label>
+                    <input type="time" id="deepCleanTime" class="schedule-input" value="10:00" required>
+                </div>
+                
+                <div class="form-section">
+                    <label>🏠 Seleccionar Habitaciones</label>
+                    <div class="room-selection-grid" id="roomSelectionGrid"></div>
+                </div>
+                
+                <div class="form-section">
+                    <label for="deepCleanNotes">📝 Notas (opcional)</label>
+                    <textarea id="deepCleanNotes" class="schedule-input" placeholder="Ej: Limpieza de alfombras, ventanas, etc."></textarea>
+                </div>
+                
+                <div class="schedule-actions">
+                    <button class="btn-save-schedule" onclick="saveDeepCleanSchedule()">
+                        ✓ Programar Limpieza
+                    </button>
+                    <button class="btn-cancel-schedule" onclick="closeDeepCleanScheduleModal()">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Confirmación de Limpieza Profunda -->
+    <div id="deepCleanConfirmModal" class="modal">
+        <div class="modal-content cleaning-modal-content">
+            <span class="close" onclick="closeDeepCleanConfirmModal()">&times;</span>
+            <h2>🧽 Confirmar Limpieza Profunda</h2>
+            <div id="deepCleaningDetails" class="cleaning-details">
+                <div class="cleaning-info-card">
+                    <div class="room-info-header">
+                        <div class="room-number-large" id="dcRoomNumber">5</div>
+                        <div class="room-building-info" id="dcRoomBuilding">Edificio 1</div>
+                    </div>
+                    
+                    <div class="cleaning-timeline">
+                        <div class="timeline-item">
+                            <div class="timeline-icon">📅</div>
+                            <div class="timeline-content">
+                                <div class="timeline-label">Programada para</div>
+                                <div class="timeline-date" id="dcScheduledDate">18 de febrero, 10:00 AM</div>
+                            </div>
+                        </div>
+                        
+                        <div class="timeline-item" id="dcScheduleNotesContainer" style="display: none;">
+                            <div class="timeline-icon">📋</div>
+                            <div class="timeline-content">
+                                <div class="timeline-label">Instrucciones</div>
+                                <div class="timeline-date" id="dcScheduleNotes"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="cleaning-notes-section">
+                <label for="deepCleanCompletionNotes">📝 Notas de Limpieza (opcional)</label>
+                <textarea id="deepCleanCompletionNotes" placeholder="Ej: Se cambió colchón, se reparó grifo, etc."></textarea>
+            </div>
+            <div class="cleaning-modal-actions">
+                <button id="btnConfirmDeepClean" class="btn-confirm-clean">✓ Confirmar Limpieza Profunda</button>
+                <button onclick="closeDeepCleanConfirmModal()" class="btn-cancel">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Desglose Detallado -->
+    <div id="revenueDetailModal" class="modal">
+        <div class="modal-content revenue-detail-modal">
+            <span class="close" onclick="closeRevenueDetailModal()">&times;</span>
+            <h2 id="revenueDetailTitle">💰 Desglose Detallado</h2>
+            
+            <div class="revenue-detail-filters">
+                <button class="filter-btn active" onclick="filterRevenueDetail('all')">Todos los Turnos</button>
+                <button class="filter-btn" onclick="filterRevenueDetail('day')">Turno Día</button>
+                <button class="filter-btn" onclick="filterRevenueDetail('night')">Turno Noche</button>
+            </div>
+            
+            <div class="revenue-detail-summary">
+                <div class="detail-summary-card">
+                    <div class="summary-label">Total</div>
+                    <div class="summary-value" id="detailTotalAmount">$0.00</div>
+                    <div class="summary-count" id="detailTotalCount">0 transacciones</div>
+                </div>
+            </div>
+            
+            <div id="revenueDetailList" class="revenue-detail-list"></div>
+        </div>
+    </div>
+
+    <!-- Modal de Actividad de Habitaciones -->
+    <div id="roomsActivityModal" class="modal">
+        <div class="modal-content revenue-detail-modal">
+            <span class="close" onclick="closeRoomsActivityModal()">&times;</span>
+            <h2>🏠 Actividad de Habitaciones</h2>
+            
+            <div class="revenue-detail-filters">
+                <button class="filter-btn active" data-filter="current" onclick="filterRoomsActivity('current')">Turno Actual</button>
+                <button class="filter-btn" data-filter="previous" onclick="filterRoomsActivity('previous')">Turno Anterior</button>
+                <button class="filter-btn" data-filter="dirty" onclick="filterRoomsActivity('dirty')">Habitaciones Sucias</button>
+            </div>
+            
+            <div class="revenue-detail-summary">
+                <div class="detail-summary-card">
+                    <div class="summary-label" id="roomsActivityLabel">Turno Actual</div>
+                    <div class="summary-value" id="roomsActivityCount">0</div>
+                    <div class="summary-count" id="roomsActivitySubtitle">habitaciones</div>
+                </div>
+            </div>
+            
+            <div id="roomsActivityList" class="revenue-detail-list"></div>
+        </div>
+    </div>
+
+    <!-- Modal de Resumen de Gastos -->
+    <div id="expensesSummaryModal" class="modal">
+        <div class="modal-content revenue-detail-modal">
+            <span class="close" onclick="closeExpensesSummaryModal()">&times;</span>
+            <h2>💸 Resumen de Gastos</h2>
+            
+            <div class="revenue-detail-filters">
+                <button class="filter-btn active" onclick="filterExpensesSummary('day')">Hoy</button>
+                <button class="filter-btn" onclick="filterExpensesSummary('week')">Semana</button>
+                <button class="filter-btn" onclick="filterExpensesSummary('month')">Mes</button>
+            </div>
+            
+            <div class="revenue-detail-filters" style="margin-top: 10px;">
+                <button class="filter-btn active" onclick="filterExpensesShift('all')">Todos</button>
+                <button class="filter-btn" onclick="filterExpensesShift('day')">Turno Día</button>
+                <button class="filter-btn" onclick="filterExpensesShift('night')">Turno Noche</button>
+            </div>
+            
+            <div id="expensesSummaryModalContent"></div>
+        </div>
+    </div>
+
+    <!-- Modal de Historial de Turnos -->
+    <div id="shiftHistoryModal" class="modal">
+        <div class="modal-content shift-history-modal">
+            <span class="close" onclick="closeShiftHistoryModal()">&times;</span>
+            <h2>📋 Historial de Turnos</h2>
+            <p style="color: #7f8c8d; margin-bottom: 20px;">Últimos 4 turnos (2 días)</p>
+            
+            <div id="shiftHistoryList" class="shift-history-list"></div>
+        </div>
+    </div>
+
+    <!-- Modal de Desglose por Método de Pago -->
+    <div id="paymentMethodModal" class="modal">
+        <div class="modal-content revenue-detail-modal">
+            <span class="close" onclick="closePaymentMethodModal()">&times;</span>
+            <h2 id="paymentMethodModalTitle">💰 Desglose de Pagos</h2>
+            
+            <div id="paymentMethodModalContent"></div>
+        </div>
+    </div>
+
+    <!-- Modal de Gestión de Empleados -->
+    <div id="payrollModal" class="modal">
+        <div class="modal-content payroll-modal">
+            <span class="close" onclick="closePayrollModal()">&times;</span>
+            <h2>💼 Gestión de Nómina</h2>
+            
+            <div class="payroll-form">
+                <div class="form-row">
+                    <div class="form-group" style="grid-column:1/-1;">
+                        <label for="payrollName">Nombre del Empleado</label>
+                        <input type="text" id="payrollName" class="mr-input" placeholder="Nombre completo" maxlength="100">
+                    </div>
+                </div>
+
+                <!-- Selector de semanas — botones pill, fuera de la cuadrícula de 2 col -->
+                <div style="margin-bottom:15px;">
+                    <label style="display:block;font-weight:600;color:#2c3e50;font-size:14px;margin-bottom:8px;">Semanas que trabaja</label>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button type="button" class="payroll-week-btn active" data-week="1" onclick="togglePayrollWeek(this)">Sem. 1</button>
+                        <button type="button" class="payroll-week-btn active" data-week="2" onclick="togglePayrollWeek(this)">Sem. 2</button>
+                        <button type="button" class="payroll-week-btn active" data-week="3" onclick="togglePayrollWeek(this)">Sem. 3</button>
+                        <button type="button" class="payroll-week-btn active" data-week="4" onclick="togglePayrollWeek(this)">Sem. 4</button>
+                        <button type="button" class="payroll-week-btn active" data-week="5" onclick="togglePayrollWeek(this)">Sem. 5</button>
+                    </div>
+                    <!-- checkboxes ocultos para compatibilidad con el JS existente -->
+                    <input type="checkbox" id="payrollWeek1" value="1" checked style="display:none;">
+                    <input type="checkbox" id="payrollWeek2" value="2" checked style="display:none;">
+                    <input type="checkbox" id="payrollWeek3" value="3" checked style="display:none;">
+                    <input type="checkbox" id="payrollWeek4" value="4" checked style="display:none;">
+                    <input type="checkbox" id="payrollWeek5" value="5" checked style="display:none;">
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="payrollShift">Turno</label>
+                        <select id="payrollShift" class="mr-input">
+                            <option value="dia">Día</option>
+                            <option value="noche">Noche</option>
+                            <option value="dia-fin-semana">Día, Fin de Semana</option>
+                            <option value="noche-fin-semana">Noche, Fin de Semana</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="payrollDepartment">Departamento/Sección</label>
+                        <select id="payrollDepartment" class="mr-input">
+                            <option value="lavanderia">Lavandería</option>
+                            <option value="recepcion">Recepción</option>
+                            <option value="limpieza">Limpieza</option>
+                            <option value="suites-lm">Suites LM</option>
+                            <option value="casa">Casa</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="payrollDailyRate">Tarifa Diaria</label>
+                        <input type="number" id="payrollDailyRate" class="mr-input" placeholder="Monto por día" step="0.01" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="payrollDays">Días Trabajados</label>
+                        <input type="number" id="payrollDays" class="mr-input" placeholder="Número de días" min="1" max="7">
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="payrollTotal">Total a Pagar</label>
+                        <input type="number" id="payrollTotal" class="mr-input" placeholder="Total calculado" step="0.01" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="payrollNotes">Notas</label>
+                        <input type="text" id="payrollNotes" class="mr-input" placeholder="Notas adicionales" maxlength="200">
+                    </div>
+                </div>
+            </div>
+            
+            <div class="payroll-modal-actions">
+                <button id="btnSavePayroll" class="btn-confirm-clean" onclick="savePayrollEmployee()">💾 Guardar Empleado</button>
+                <button onclick="closePayrollModal()" class="btn-cancel">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <script defer src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <!-- Firebase SDK compat (sin defer para cargar primero) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+    <script src="firebase-sync.js?v=5.9.9&t=20260512203000"></script>
+    
+    <!-- Safari Fix - DEBE cargarse ANTES de app.js -->
+    <script src="safari-fix.js?v=5.9.9&t=20260512203000"></script>
+    
+    <script defer src="toast-system.js?v=5.9.9&t=20260512203000"></script>
+    <script defer src="app.js?v=5.9.9&t=20260512203000"></script>
+
+    <!-- Modal de Cambio de Contraseña -->
+    <div id="changePasswordModal" class="modal">
+        <div class="modal-content change-password-modal">
+            <span class="close" onclick="closeChangePasswordModal()">&times;</span>
+            <h2>🔑 Cambiar Contraseña</h2>
+            
+            <div class="change-password-user-info">
+                <div class="user-avatar">👤</div>
+                <div>
+                    <div class="user-name" id="changePasswordUsername">Usuario</div>
+                    <span class="user-role-badge" id="changePasswordUserRole">Rol</span>
+                </div>
+            </div>
+            
+            <form id="changePasswordForm" class="change-password-form">
+                <div class="form-group">
+                    <label for="newPassword">Nueva Contraseña</label>
+                    <input type="password" id="newPassword" class="modal-input" placeholder="Mínimo 6 caracteres" required minlength="6">
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirmPassword">Confirmar Contraseña</label>
+                    <input type="password" id="confirmPassword" class="modal-input" placeholder="Repite la contraseña" required minlength="6">
+                </div>
+                
+                <div class="modal-actions">
+                    <button type="button" class="btn-cancel" onclick="closeChangePasswordModal()">Cancelar</button>
+                    <button type="button" class="btn-confirm" onclick="confirmChangePassword()">Cambiar Contraseña</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal de Sincronización de Dispositivos -->
+    <!-- FIXED: Movido dentro del body tag (Problem 5) -->
+    <div id="syncModal" class="modal">
+        <div class="modal-content sync-modal">
+            <span class="close" onclick="closeSyncModal()">&times;</span>
+            <h2>🔄 Sincronizar Dispositivos</h2>
+            
+            <div class="sync-info">
+                <p>Usa estos botones para sincronizar datos entre dispositivos (celular y computadora).</p>
+            </div>
+            
+            <div class="sync-buttons">
+                <button onclick="uploadToFirebase()" class="btn-sync-upload">
+                    📤 Subir Datos a Firebase
+                    <small>Usa este botón en el dispositivo con datos CORRECTOS</small>
+                </button>
+                
+                <button onclick="downloadFromFirebase()" class="btn-sync-download">
+                    📥 Descargar Datos de Firebase
+                    <small>Usa este botón en el dispositivo a ACTUALIZAR</small>
+                </button>
+            </div>
+            
+            <div id="syncStatus" class="sync-status"></div>
+        </div>
+    </div>
+
+</body>
+</html>
