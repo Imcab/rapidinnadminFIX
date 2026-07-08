@@ -1,4 +1,4 @@
-// ============ FIREBASE SYNC v5.9.29 - OPTIMIZADO ============
+// ============ FIREBASE SYNC v5.9.30 - OPTIMIZADO ============
 // Sistema de sincronización en tiempo real con Firebase
 // Logging reducido para producción
 
@@ -197,7 +197,25 @@ function _queueForOffline(key, data) {
     _saveOfflineQueue();
 }
 
+// Último contenido que se confirmó guardado con éxito para cada clave —
+// evita reescribir un documento cuyo valor no cambió desde el último
+// guardado real. Sin esto, cualquier caller que llame a save()/saveAll()
+// repetidamente (p.ej. varias ventas de habitación seguidas, cada una
+// disparando un guardado inmediato de motelRooms/motelInventory y de los 3
+// meses de shards de ingresos aunque solo el mes actual haya cambiado)
+// manda decenas de escrituras redundantes a Firestore en poco tiempo — eso
+// es lo que agota la cola de escritura del cliente (FirebaseError
+// resource-exhausted: "Write stream exhausted maximum allowed queued
+// writes").
+const _lastSavedContent = new Map();
+
 async function _fbSave(key, data) {
+    const serialized = JSON.stringify(data);
+    if (_lastSavedContent.get(key) === serialized) {
+        log(`[Firebase] ⏭️ ${key} sin cambios desde el último guardado, se omite`);
+        return;
+    }
+
     log(`[Firebase] 💾 Intentando guardar: ${key}`);
 
     const authResult = await _ensureAuth();
@@ -218,11 +236,12 @@ async function _fbSave(key, data) {
     try {
         log(`[Firebase] 🔄 Guardando ${key} en Firestore...`);
         await _db.collection(_COLL).doc(key).set({
-            value: JSON.stringify(data),
+            value: serialized,
             timestamp: firebase.firestore.FieldValue.serverTimestamp(),
             updatedAt: Date.now(), // FIXED: Agregar campo updatedAt para comparación de versiones
             deviceId: (function(){ try { return localStorage.getItem('_deviceId'); } catch(e){} return (window._memStorage&&window._memStorage['_deviceId'])||'unknown'; })() // Identificar dispositivo
         });
+        _lastSavedContent.set(key, serialized); // recién AHORA que se confirmó — no antes
         log(`[Firebase] ✅ ${key} guardado exitosamente`);
         _pushDebug('save-ok', key);
     } catch(e) {
@@ -414,12 +433,14 @@ async function _processOfflineQueue() {
 
         await Promise.all(batch.map(async (item) => {
             try {
+                const serialized = JSON.stringify(item.data);
                 await _db.collection(_COLL).doc(item.key).set({
-                    value: JSON.stringify(item.data),
+                    value: serialized,
                     timestamp: firebase.firestore.FieldValue.serverTimestamp(),
                     deviceId: (function(){ try { return localStorage.getItem('_deviceId'); } catch(e){} return (window._memStorage&&window._memStorage['_deviceId'])||'unknown'; })(),
                     queuedAt: item.timestamp // Timestamp de cuando se agregó a la cola
                 });
+                _lastSavedContent.set(item.key, serialized); // igual que en _fbSave: evita reescribirlo de nuevo si nada cambió
                 processed++;
                 log(`[Firebase] ✅ Sincronizado desde cola: ${item.key}`);
             } catch(e) {

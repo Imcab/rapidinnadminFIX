@@ -1251,6 +1251,18 @@ function _splitIntoChunks(records, maxBytes) {
 // Guarda un shard mensual en Firebase, partiéndolo en varios documentos si
 // hace falta (ver comentario de MAX_SHARD_BYTES arriba). No se pierde ni
 // descarta ningún registro: solo se distribuye entre más documentos.
+//
+// persistHotShards() reescribe los 3 meses de la ventana caliente en CADA
+// guardado, aunque casi siempre solo el mes actual cambió de verdad (una
+// venta/renovación usa Date.now(), nunca toca meses viejos) — eso son 9
+// escrituras (revenue/sales/expenses × 3 meses) por acción, la mayoría
+// redundantes. No hace falta filtrar eso aquí: _fbSave() (firebase-sync.js)
+// ya compara el contenido contra el último guardado exitoso y omite la
+// escritura a Firestore si no cambió nada, así que las llamadas de más
+// terminan siendo baratas (comparación en memoria) en vez de tráfico de red
+// real — que es lo que agotaba la cola de escritura del cliente
+// (resource-exhausted: "Write stream exhausted maximum allowed queued
+// writes") cuando varias ventas seguidas disparaban guardados inmediatos.
 function _saveShardToFirebase(type, year, month, records) {
     if (!window.FirebaseSync || !window.FirebaseSync.ready) return;
     const baseKey = _shardFirebaseKey(type, year, month);
