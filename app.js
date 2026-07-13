@@ -2430,11 +2430,16 @@ async function init() {
         }
     }, 30000)); // Actualizar control de turno cada 30 segundos
 
-    // Revisar cada minuto si el turno quedó desfasado (nadie lo cerró a
-    // tiempo) y cerrarlo automáticamente — ver autoCloseShiftIfOverdue().
-    activeIntervals.push(setInterval(() => {
-        autoCloseShiftIfOverdue().catch(err => console.error('[Turno] Error en auto-cierre:', err));
-    }, 60000));
+    // Auto-cierre de turno por desfase horario DESACTIVADO a pedido del
+    // usuario: no dispara exactamente a las 6:15/18:15, sino en el primer
+    // chequeo disponible después de esa hora — si nadie abría la app en
+    // ese rango, el cierre (con reporte, cobros incluidos) aparecía horas
+    // más tarde sin que quedara claro por qué (ver autoCloseShiftIfOverdue
+    // más abajo, que queda sin usar). El corte de turno vuelve a ser 100%
+    // manual.
+    // activeIntervals.push(setInterval(() => {
+    //     autoCloseShiftIfOverdue().catch(err => console.error('[Turno] Error en auto-cierre:', err));
+    // }, 60000));
 
     // Sincronización periódica de DATOS sigue DESACTIVADA - causaba pérdida
     // de datos (recargar/pisar el estado local periódicamente).
