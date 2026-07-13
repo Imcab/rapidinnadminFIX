@@ -2161,7 +2161,18 @@ const ROOM_STATUS_PRIORITY = { occupied: 4, dirty: 3, reserved: 2, available: 1,
 
 function resolveRoomConflict(incoming, current) {
     const resolved = { ...current };
-    const TIME_TOLERANCE_MS = 10000;
+    // 10s (valor original) era demasiado ancho: capturaba acciones
+    // deliberadas y SECUENCIALES en flujos normales de operación — p.ej.
+    // marcar una habitación sucia en un dispositivo y, segundos después,
+    // confirmarla limpia desde otro — como si fueran un conflicto
+    // ambiguo/simultáneo. En ese caso el desempate por prioridad de
+    // negocio (dirty > available) hacía ganar la marca de "sucia" vieja
+    // sobre la limpieza recién hecha, y el estado volvía a 'dirty' solo
+    // porque las dos acciones habían ocurrido con pocos segundos de
+    // diferencia, no porque de verdad hubiera ambigüedad de reloj entre
+    // dispositivos. 2s sigue cubriendo un desfase de reloj real entre
+    // dispositivos sin atrapar ese flujo secuencial normal.
+    const TIME_TOLERANCE_MS = 2000;
 
     resolved.lastModified = Math.max(incoming.lastModified || 0, current.lastModified || 0);
     resolved.cleanedCount = Math.max(incoming.cleanedCount || 0, current.cleanedCount || 0);
