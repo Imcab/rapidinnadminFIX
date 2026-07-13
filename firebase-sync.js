@@ -376,9 +376,21 @@ function _subscribeCollectionResilient(onDocChange) {
             backoff = Math.min(backoff * 1.5, 30000);
             return;
         }
-        backoff = 2000;
         liveUnsub = _db.collection(_COLL).onSnapshot(
             (snapshot) => {
+                // El backoff SOLO se reinicia acá, cuando de verdad llega un
+                // snapshot exitoso — antes se reiniciaba a 2000 arriba, justo
+                // antes de CADA intento de attach() (con éxito o no), así que
+                // el crecimiento exponencial de abajo (backoff *= 1.5) se
+                // descartaba en el siguiente intento sin llegar a aplicarse
+                // nunca. Resultado real: en una red inestable (el listener
+                // "transport errored en bucle" que ya documentaba el
+                // comentario de arriba) el sistema reintentaba cada 2s de
+                // forma indefinida en vez de espaciarse, y cada reconexión
+                // que lograba prender aunque fuera un instante volvía a leer
+                // la colección completa de Firestore — así se agotó la cuota
+                // diaria de lecturas en un par de horas.
+                backoff = 2000;
                 snapshot.docChanges().forEach(change => {
                     if (change.type === 'removed') return;
                     onDocChange(change.doc);
@@ -389,8 +401,17 @@ function _subscribeCollectionResilient(onDocChange) {
                 _pushDebug('listen-error', `(colección completa): ${err.code || err.message}`);
                 liveUnsub = null;
                 if (!stopped) {
-                    retryTimer = setTimeout(attach, backoff);
-                    backoff = Math.min(backoff * 1.5, 30000);
+                    // Cuota de Firestore agotada: reintentar en 2-30s es
+                    // inútil, no se va a recuperar hasta el reinicio diario
+                    // de la cuota — insistir así solo la mantiene agotada
+                    // (y sigue generando el mismo error en bucle en consola).
+                    // Backoff largo y fijo en este caso específico.
+                    if (err.code === 'resource-exhausted') {
+                        retryTimer = setTimeout(attach, 5 * 60 * 1000);
+                    } else {
+                        retryTimer = setTimeout(attach, backoff);
+                        backoff = Math.min(backoff * 1.5, 30000);
+                    }
                 }
             }
         );
@@ -728,29 +749,41 @@ window.FirebaseSync = {
     startReconnectionSystem: () => {
         let reconnectionAttempts = 0;
         const MAX_RECONNECTION_ATTEMPTS = 5;
-        
+        // Antes, al agotarse la cuota diaria de Firestore, este intervalo
+        // seguía llamando a .get() cada 10s para siempre — el tope de
+        // MAX_RECONNECTION_ATTEMPTS solo cambiaba el mensaje de log, nunca
+        // frenaba el setInterval en sí. Contra un resource-exhausted eso no
+        // sirve de nada (no se va a recuperar hasta el reinicio diario) y
+        // solo mantiene la cuota agotada más tiempo y llena la consola de
+        // errores repetidos. Este cooldown corta esos intentos por un rato.
+        let quotaCooldownUntil = 0;
+
         setInterval(async () => {
+            if (Date.now() < quotaCooldownUntil) return;
             // Solo intentar reconectar si el navegador dice que hay internet pero Firebase está offline
             if (!_isOnline && navigator.onLine) {
                 reconnectionAttempts++;
                 console.log(`[Firebase] 🔄 Intento de reconexión ${reconnectionAttempts}/${MAX_RECONNECTION_ATTEMPTS}...`);
-                
+
                 try {
                     // Verificar conectividad con una operación simple
                     await _db.collection(_COLL).doc('_connection_test').get();
                     console.log('[Firebase] ✅ Reconectado exitosamente');
                     _isOnline = true;
                     reconnectionAttempts = 0; // Resetear contador
-                    
+
                     // Procesar cola offline
                     const processed = await _processOfflineQueue();
                     if (_onlineStatusCallback) _onlineStatusCallback(true, _offlineQueue.length);
-                    
+
                     if (processed > 0) {
                         console.log(`[Firebase] ✅ ${processed} elementos sincronizados tras reconexión`);
                     }
                 } catch (e) {
-                    if (reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
+                    if (e.code === 'resource-exhausted') {
+                        warn('[Firebase] ⚠️ Cuota de Firestore agotada, pausando reconexión 5 min');
+                        quotaCooldownUntil = Date.now() + 5 * 60 * 1000;
+                    } else if (reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
                         warn(`[Firebase] ⚠️ Máximo de intentos de reconexión alcanzado. Esperando...`);
                         reconnectionAttempts = 0; // Resetear para intentar de nuevo después
                     } else {
