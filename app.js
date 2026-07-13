@@ -1609,12 +1609,26 @@ function _subscribeHotWindowListeners() {
             // muertos. Si un mes cruza el umbral de 700KB en vivo durante la
             // sesión, sus particiones nuevas se recogen en la próxima
             // recarga completa (rollover de hora, o volver del background).
-            _hotShardListenerKeys.push(baseKey);
-            window.FirebaseSync.listenKey(baseKey, onShardUpdate);
+            //
+            // IMPORTANTE: saveShardData()/loadShardData() (firebase-sync.js)
+            // anteponen el prefijo "shard_" al nombre real del documento en
+            // Firestore — igual que saveMrData/loadMrData anteponen "mr_"
+            // (ver setupMrDataListener, que sí arma la clave completa antes
+            // de llamar a listenKey). Aquí faltaba anteponer ese mismo
+            // prefijo antes de llamar a listenKey(), así que el listener se
+            // registraba bajo un doc.id que Firestore nunca iba a emitir
+            // (p.ej. "revenue_2026_6" en vez de "shard_revenue_2026_6") — el
+            // callback jamás se disparaba con datos reales, en ningún
+            // dispositivo, todo el tiempo. Ingresos/ventas/gastos solo se
+            // veían actualizados tras un reload completo (que sí usa el
+            // prefijo correcto vía _loadShardFromFirebase), nunca en vivo.
+            const listenBaseKey = 'shard_' + baseKey;
+            _hotShardListenerKeys.push(listenBaseKey);
+            window.FirebaseSync.listenKey(listenBaseKey, onShardUpdate);
             const comboKey = `${type}_${year}_${month}`;
             if (_shardPartitionedCombos.has(comboKey)) {
                 for (let p = 0; p < MAX_SHARD_LISTEN_PARTS; p++) {
-                    const partKey = `${baseKey}_p${p}`;
+                    const partKey = `${listenBaseKey}_p${p}`;
                     _hotShardListenerKeys.push(partKey);
                     window.FirebaseSync.listenKey(partKey, onShardUpdate);
                 }
@@ -2411,8 +2425,29 @@ async function init() {
         autoCloseShiftIfOverdue().catch(err => console.error('[Turno] Error en auto-cierre:', err));
     }, 60000));
 
-    // Sincronización periódica DESACTIVADA - causaba pérdida de datos
-    
+    // Sincronización periódica de DATOS sigue DESACTIVADA - causaba pérdida
+    // de datos (recargar/pisar el estado local periódicamente).
+    //
+    // Esto de abajo es distinto: solo vuelve a SUSCRIBIR los listeners en
+    // tiempo real (motelRooms/etc. vía listenAll + los shards de
+    // roomRevenue/sales/expenses vía listenKey), sin leer ni escribir
+    // ningún dato — no puede pisar nada. Hace falta porque hoy los
+    // listeners solo se (re)registran al cargar la página o al volver de
+    // background oculto >60s (ver bloque "SINCRONIZACIÓN AL VOLVER DEL
+    // BACKGROUND"). Un dispositivo que se queda con la pestaña abierta y
+    // VISIBLE durante días (recepción, pantalla siempre encendida) nunca
+    // pasa por ninguno de los dos casos: si un listener muere en silencio
+    // (transport error, colisión "already-exists" al registrarse) queda
+    // sordo indefinidamente — habitaciones sincronizando bien por un canal
+    // mientras ingresos/reportes de otro canal se quedan varados varios
+    // días hasta el próximo reload. _reactivateRealtimeListeners() ya tiene
+    // su propio debounce (5s) así que no colisiona con las otras dos
+    // reactivaciones si coinciden.
+    activeIntervals.push(setInterval(() => {
+        if (!document.hidden) {
+            _reactivateRealtimeListeners('watchdog periódico');
+        }
+    }, 5 * 60 * 1000));
 
     initFirebaseSync().catch(err => {
         console.error('[Firebase] Error en sincronización:', err);
@@ -2680,12 +2715,26 @@ function _saveDataImmediate() {
         localStorage.setItem('motelInventory',   JSON.stringify(inventory));
     } catch(e) {}
     persistHotShards();
-    if (window.FirebaseSync && window.FirebaseSync.ready && !isSaving) {
+    if (window.FirebaseSync && window.FirebaseSync.ready) {
+        // Igual que en saveDataThrottled: si ya hay un guardado en curso, no
+        // descartar este cambio — marcarlo pendiente para que se reintente
+        // apenas termine el guardado actual. Antes esto se descartaba sin
+        // más, dejando ocupaciones/precios varados solo en localStorage
+        // hasta que otra acción cualquiera disparara un nuevo guardado.
+        if (isSaving) { _pendingFirebaseSave = true; return; }
+
         isSaving = true;
+        _pendingFirebaseSave = false;
         window.FirebaseSync.saveAll({
             motelRooms:       rooms,
             motelInventory:   inventory,
-        }).finally(() => { isSaving = false; });
+        }).finally(() => {
+            isSaving = false;
+            if (_pendingFirebaseSave) {
+                _pendingFirebaseSave = false;
+                saveData();
+            }
+        });
     }
 }
 
