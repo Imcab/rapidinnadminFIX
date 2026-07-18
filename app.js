@@ -906,7 +906,7 @@ function confirmCleanRoom(roomId) {
     // Cambiar estado a disponible
     room.status = 'available';
     room.cleanedCount++;
-    room.lastModified = Date.now(); // Timestamp para merge inteligente
+    room.lastModified = _roomSyncNow(); // Timestamp para merge inteligente
     const cleanTimestamp = Date.now();
 
     // CRÍTICO: Resetear TODOS los campos de la habitación
@@ -994,6 +994,22 @@ document.addEventListener('DOMContentLoaded', () => {
     _setupLoginForm();                              // formulario listo para usar
     _setupReservationForm();                        // formulario reservas
     checkSession();                                 // muestra login o mainApp según sesión
+
+    // Acceso al panel de diagnóstico (openSyncDebugModal) sin necesidad de
+    // devtools: el botón se quitó del header (ya no hace falta a la vista),
+    // pero sigue siendo la única forma práctica de ver el estado de
+    // sincronización EN un celular real — visitar la URL con #debug lo abre.
+    if (location.hash === '#debug') {
+        setTimeout(() => { try { openSyncDebugModal(); } catch (e) {} }, 800);
+    }
+    // Agregar "#debug" a una pestaña YA ABIERTA, sin recargar, solo cambia
+    // el fragmento de la URL — no dispara una navegación completa. Es la
+    // única forma de inspeccionar una sesión que lleva rato viva (p.ej. un
+    // listener que se quedó "muerto" en silencio) tal como está, sin
+    // resetear justo el estado que se quiere diagnosticar.
+    window.addEventListener('hashchange', () => {
+        if (location.hash === '#debug') { try { openSyncDebugModal(); } catch (e) {} }
+    });
 
     // ── FASE 2: SEGUNDO PLANO (con red) ───────────────────────────
     waitForFirebase().then(async (firebaseReady) => {
@@ -1680,6 +1696,37 @@ function _reactivateRealtimeListeners(reason) {
         window.FirebaseSync.listenAll(handleFirebaseRealtimeUpdate);
     }
     _subscribeHotWindowListeners();
+    _subscribeRoomDocListeners();
+}
+
+// Suscribe UN listener por habitación — todos comparten el mismo stream de
+// la colección motelRoomDocs, así que registrar los 32 no cuesta 32
+// conexiones reales. Al llegar un cambio real de OTRO dispositivo para una
+// habitación, se reemplaza DIRECTO en el arreglo local: Firestore ya decidió
+// del lado del servidor cuál escritura es la vigente para ese documento.
+function _subscribeRoomDocListeners() {
+    if (!window.FirebaseSync || !window.FirebaseSync.listenRoom || !Array.isArray(rooms)) return;
+    rooms.forEach(r => {
+        if (!r || !r.id) return;
+        window.FirebaseSync.listenRoom(r.id, (roomId, incomingRoom) => {
+            if (!incomingRoom || !incomingRoom.id) return;
+            const idx = rooms.findIndex(x => x && x.id === incomingRoom.id);
+            if (idx === -1) return;
+            rooms[idx] = incomingRoom;
+            try { localStorage.setItem('motelRooms', JSON.stringify(rooms)); } catch (e) {}
+
+            if (currentUser && currentUser.role === 'limpieza') renderCleaningRooms();
+            else renderRooms();
+            renderReservationsSidebar();
+
+            if (document.getElementById('shift-control-tab')?.classList.contains('active')) {
+                updateShiftControl();
+            } else {
+                _shiftDataStale = true;
+            }
+            updateStatistics();
+        });
+    });
 }
 
 // Detecta si el mes calendario cambió desde la última vez que se revisó; si
@@ -1901,7 +1948,7 @@ function createReservationFromSidebar(formValues) {
 
     room.status = 'reserved';
     room.reservationId = reservation.id;
-    room.lastModified = Date.now();
+    room.lastModified = _roomSyncNow();
     
     // NO registrar ingreso aquí - se registrará cuando el cliente llegue
     // El ingreso se registra en confirmReservationStart() cuando la habitación pasa a 'occupied'
@@ -1934,7 +1981,7 @@ function cancelReservation(reservationId) {
         if (room && room.status === 'reserved' && room.reservationId === reservationId) {
             room.status = 'available';
             room.reservationId = null;
-            room.lastModified = Date.now();
+            room.lastModified = _roomSyncNow();
         }
 
         saveData();
@@ -1963,8 +2010,8 @@ function confirmReservationStart() {
 
     // Marcar la habitación como ocupada con los datos de la reserva
     room.status = 'occupied';
-    room.checkInTime = Date.now();
-    room.lastModified = Date.now(); // Timestamp para merge inteligente
+    room.checkInTime = _roomSyncNow();
+    room.lastModified = _roomSyncNow(); // Timestamp para merge inteligente
     room.guestName = reservation.guestName || '';
     room.guestPhone = reservation.phone || ''; // CORREGIDO: era guestPhone
     room.price = reservation.price || room.defaultPrice;
@@ -2033,6 +2080,33 @@ let currentRoomId = null;
 let editingProductId = null;
 let currentCategoryFilter = 'all';
 let _appReady = false;
+
+// Puerta que evita reenviar el arreglo `rooms` completo a la colección
+// motelRoomDocs (ver saveDataThrottled/_saveDataImmediate) ANTES de que este
+// dispositivo haya reconciliado su copia de `rooms` con la nube al menos una
+// vez en la sesión. Sin esto: un dispositivo recién reabierto arranca con
+// `rooms` de localStorage (posiblemente desactualizado — no vio un check-in
+// hecho en otro dispositivo mientras estaba cerrado), activa los listeners
+// de inmediato, pero la carga fresca tarda unos segundos en resolver. Si el
+// usuario toca CUALQUIER OTRA habitación en esa ventana, el guardado
+// reenvía la copia vieja de la habitación NO tocada, pisando el estado real
+// en Firestore — el bug de "se marca ocupada y luego aparece disponible
+// sola". Mientras la puerta está cerrada, localStorage y el documento plano
+// motelRooms (con su propia cola offline y fallback de fusión por
+// timestamp) se siguen guardando exactamente igual — no se pierde nada,
+// solo se retrasa el broadcast por-habitación hasta que la puerta abra.
+let _roomsReconciledWithCloud = false;
+function _markRoomsReconciled(reason) {
+    if (_roomsReconciledWithCloud) return;
+    _roomsReconciledWithCloud = true;
+    console.log(`[Sync] rooms reconciliado con la nube (${reason}) — habilitando broadcast por habitación`);
+    saveData(); // flush inmediato de cualquier edición hecha mientras la puerta estaba cerrada
+}
+// Respaldo: si por algún motivo initFirebaseSync() nunca llega a reconciliar
+// (Firebase caído, error inesperado), no dejar el guardado por-habitación
+// bloqueado indefinidamente — abrir la puerta de todos modos tras 15s.
+setTimeout(() => _markRoomsReconciled('watchdog 15s'), 15000);
+
 let shiftSnapshots = []; // Snapshots de habitaciones al cerrar turno
 let currentShiftStart = null; // Timestamp de inicio del turno actual
 let currentShiftType = null; // Tipo de turno actual ('day' o 'night') - MANUAL
@@ -2147,6 +2221,19 @@ function mergeRoomsFromFirebase(incomingRooms, currentRooms) {
  * dispositivo puede traer lastModified reciente sin que ese estado en
  * particular haya cambiado realmente.
  */
+// Reloj usado para los timestamps de ESTADO de habitación (lastModified,
+// checkInTime, dirtyTimestamp). Date.now() crudo asume que los relojes de
+// todos los dispositivos están sincronizados entre sí — si el celular de
+// recepción tiene el reloj atrasado respecto al de la PC, sus cambios
+// pierden SIEMPRE la comparación de conflicto sin importar cuál pasó
+// realmente antes. getCorrectedNow() (si existe en FirebaseSync) corrige
+// ese desfase; si no existe todavía, cae a Date.now() sin romper nada.
+function _roomSyncNow() {
+    return (window.FirebaseSync && typeof window.FirebaseSync.getCorrectedNow === 'function')
+        ? window.FirebaseSync.getCorrectedNow()
+        : Date.now();
+}
+
 function roomStatusTimestamp(room) {
     if (room.status === 'occupied') return room.checkInTime || room.lastModified || 0;
     if (room.status === 'dirty') return room.dirtyTimestamp || room.lastModified || 0;
@@ -2350,8 +2437,14 @@ function ensureRoomsSanity() {
         rooms = rooms.filter(room => {
             if (seen.has(room.id)) {
                 const existing = seen.get(room.id);
-                const existingTime = existing.lastModified || existing.checkInTime || 0;
-                const currentTime = room.lastModified || room.checkInTime || 0;
+                // roomStatusTimestamp() (ya usado en resolveRoomConflict)
+                // elige el campo correcto según el status de cada lado y
+                // corrige el reloj — un fallback crudo lastModified||checkInTime
+                // podía quedarse con el duplicado 'available' viejo de un
+                // dispositivo con el reloj atrasado sobre uno 'occupied' más
+                // nuevo en la realidad.
+                const existingTime = roomStatusTimestamp(existing);
+                const currentTime = roomStatusTimestamp(room);
                 if (currentTime > existingTime) {
                     seen.set(room.id, room);
                     return true;
@@ -2444,23 +2537,27 @@ async function init() {
     // Sincronización periódica de DATOS sigue DESACTIVADA - causaba pérdida
     // de datos (recargar/pisar el estado local periódicamente).
     //
-    // Esto de abajo es distinto: solo vuelve a SUSCRIBIR los listeners en
-    // tiempo real (motelRooms/etc. vía listenAll + los shards de
-    // roomRevenue/sales/expenses vía listenKey), sin leer ni escribir
-    // ningún dato — no puede pisar nada. Hace falta porque hoy los
-    // listeners solo se (re)registran al cargar la página o al volver de
-    // background oculto >60s (ver bloque "SINCRONIZACIÓN AL VOLVER DEL
-    // BACKGROUND"). Un dispositivo que se queda con la pestaña abierta y
-    // VISIBLE durante días (recepción, pantalla siempre encendida) nunca
-    // pasa por ninguno de los dos casos: si un listener muere en silencio
-    // (transport error, colisión "already-exists" al registrarse) queda
-    // sordo indefinidamente — habitaciones sincronizando bien por un canal
-    // mientras ingresos/reportes de otro canal se quedan varados varios
-    // días hasta el próximo reload. _reactivateRealtimeListeners() ya tiene
-    // su propio debounce (5s) así que no colisiona con las otras dos
-    // reactivaciones si coinciden.
+    // Esto de abajo es distinto: reconecta los streams en tiempo real
+    // (motelData completo + motelRoomDocs), sin leer ni escribir ningún
+    // dato propio de la app — no puede pisar nada. Hace falta porque un
+    // dispositivo que se queda con la pestaña abierta y VISIBLE durante
+    // horas/días (recepción, pantalla siempre encendida) nunca pasa por
+    // 'carga inicial' ni por "volver de background" — si su stream muere en
+    // silencio (el caso "zombie" que forceReconnectAll existe para
+    // resolver: el SO puede matar la conexión sin que dispare nunca el
+    // callback de error) queda sordo indefinidamente hasta un reload manual.
+    // 2026-07-18: la reactivación barata de acá (_reactivateRealtimeListeners,
+    // que solo re-mapea callbacks en memoria asumiendo que el stream sigue
+    // vivo) NO alcanza para este caso — hace falta la reconexión DURA
+    // (forceReconnectAll) para que el watchdog cumpla lo que su propio
+    // propósito dice. Costo: una relectura completa de ambas colecciones
+    // cada 5 min mientras la pestaña está visible — trivial (ya medido en
+    // segundos) y sin importancia con el plan Blaze activo.
     activeIntervals.push(setInterval(() => {
         if (!document.hidden) {
+            if (window.FirebaseSync && window.FirebaseSync.forceReconnectAll) {
+                window.FirebaseSync.forceReconnectAll();
+            }
             _reactivateRealtimeListeners('watchdog periódico');
         }
     }, 5 * 60 * 1000));
@@ -2605,7 +2702,7 @@ function loadData() {
 }
 
 // Save data to localStorage AND Firebase (con throttle para optimizar)
-const saveDataThrottled = throttle(function() {
+const saveDataThrottled = throttle(async function() {
     // VALIDACIÓN CRÍTICA: NO guardar si los datos están vacíos
     if (!rooms || rooms.length === 0 || !Array.isArray(rooms)) {
         console.error('[SaveData] ❌ BLOQUEADO: rooms inválido');
@@ -2639,6 +2736,19 @@ const saveDataThrottled = throttle(function() {
     // reparten en shards por mes (ver sección SHARDING MENSUAL arriba).
     persistHotShards();
 
+    // Guarda cada habitación como su PROPIO documento en Firestore (ver
+    // "COLECCIÓN DEDICADA" en firebase-sync.js). _fbSave/saveRoom ya tienen
+    // su propio caché de "sin cambios desde el último guardado", así que
+    // llamar esto en cada ciclo de guardado (aunque solo 1 de 32 habitaciones
+    // haya cambiado de verdad) no genera 32 escrituras reales. Solo se hace
+    // una vez que `rooms` ya se reconcilió con la nube (ver
+    // _roomsReconciledWithCloud) — antes de eso, reenviar la copia local
+    // (posiblemente desactualizada) podía pisar un cambio real hecho en otro
+    // dispositivo mientras este estaba cerrado.
+    if (_roomsReconciledWithCloud && window.FirebaseSync && window.FirebaseSync.saveRoom && Array.isArray(rooms)) {
+        rooms.forEach(r => { if (r && r.id) window.FirebaseSync.saveRoom(r.id, r); });
+    }
+
     if (window.FirebaseSync && window.FirebaseSync.ready) {
         // Si ya hay un guardado en curso en Firebase, marcar que hace falta
         // otro guardado apenas termine el actual, en vez de descartarlo.
@@ -2647,14 +2757,15 @@ const saveDataThrottled = throttle(function() {
         // que otra acción cualquiera disparara un nuevo guardado.
         if (isSaving) { _pendingFirebaseSave = true; return; }
 
+        isSaving = true;
+        _pendingFirebaseSave = false;
+
         // VALIDACIÓN: Verificar 32 habitaciones antes de subir a Firebase
         if (rooms.length < 32) {
             console.error('[SaveData] Solo ' + rooms.length + ' habitaciones, esperadas 32. No se guardará en Firebase.');
+            isSaving = false;
             return;
         }
-
-        isSaving = true;
-        _pendingFirebaseSave = false;
 
         window.FirebaseSync.saveAll({
             motelRooms: rooms,
@@ -2731,6 +2842,12 @@ function _saveDataImmediate() {
         localStorage.setItem('motelInventory',   JSON.stringify(inventory));
     } catch(e) {}
     persistHotShards();
+    // Guarda cada habitación como su PROPIO documento en Firestore (ver
+    // "COLECCIÓN DEDICADA" en firebase-sync.js). Mismo guard de
+    // _roomsReconciledWithCloud que saveDataThrottled — ver comentario ahí.
+    if (_roomsReconciledWithCloud && window.FirebaseSync && window.FirebaseSync.saveRoom && Array.isArray(rooms)) {
+        rooms.forEach(r => { if (r && r.id) window.FirebaseSync.saveRoom(r.id, r); });
+    }
     if (window.FirebaseSync && window.FirebaseSync.ready) {
         // Igual que en saveDataThrottled: si ya hay un guardado en curso, no
         // descartar este cambio — marcarlo pendiente para que se reintente
@@ -3097,7 +3214,7 @@ function switchTab(tabName) {
                     const savedStart = localStorage.getItem('motelCurrentShiftStart');
                     if (savedStart) currentShiftStart = Number(JSON.parse(savedStart));
                     const savedType = localStorage.getItem('motelCurrentShiftType');
-                    if (savedType) currentShiftType = savedType;
+                    if (savedType) currentShiftType = _normalizeShiftType(savedType);
                 }
                 updateShiftControl();
                 updateStatistics();
@@ -3128,10 +3245,12 @@ function switchTab(tabName) {
                 } else if (currentUser && currentUser.role === 'recepcion') {
                     renderRooms();
                 } else if (currentUser && currentUser.role === 'limpieza') {
-                    const dirtyRooms = rooms.filter(r => r.status === 'dirty');
-                    if (dirtyRooms.length > 0) {
-                        renderCleaningRooms();
-                    }
+                    // Sin condicionar al conteo actual de sucias: si ese
+                    // conteo está mal por un listener desincronizado, volver
+                    // a tocar esta pestaña es la recuperación manual natural
+                    // que probaría un empleado — condicionar el re-render al
+                    // mismo dato que podría estar mal bloqueaba esa recuperación.
+                    renderCleaningRooms();
                     renderUpcomingDeepCleans();
                 }
             }
@@ -3897,7 +4016,7 @@ function renewStay() {
 
     // Sumar el precio de renovación al precio actual de la habitación
     room.price = room.price + renewalPrice;
-    room.lastModified = Date.now(); // Garantiza que la renovación prevalezca en merges con Firebase
+    room.lastModified = _roomSyncNow(); // Garantiza que la renovación prevalezca en merges con Firebase
     
     // Registrar el ingreso adicional
     const renewalTs = Date.now();
@@ -4071,7 +4190,7 @@ function updateRoomStatus(roomId, status) {
     
     const oldStatus = room.status;
     room.status = status;
-    room.lastModified = Date.now(); // Timestamp para merge inteligente
+    room.lastModified = _roomSyncNow(); // Timestamp para merge inteligente
     
     if (status === 'occupied') {
         // Validar Método de pago
@@ -4082,8 +4201,8 @@ function updateRoomStatus(roomId, status) {
             return;
         }
         
-        room.checkInTime = Date.now();
-        
+        room.checkInTime = _roomSyncNow();
+
         // Set end time based on custom or default hours
         const hoursToAdd = room.customTime !== null ? room.customTime : room.defaultHours;
         room.endTime = room.checkInTime + (hoursToAdd * 60 * 60 * 1000);
@@ -4121,8 +4240,8 @@ function updateRoomStatus(roomId, status) {
         }
     } else if (status === 'dirty') {
         // Guardar timestamp cuando se marca como sucia
-        room.dirtyTimestamp = Date.now();
-        room.lastModified = Date.now(); // Para sincronización correcta
+        room.dirtyTimestamp = _roomSyncNow();
+        room.lastModified = _roomSyncNow(); // Para sincronización correcta
     } else if (status === 'available' || status === 'not-available') {
         // NO registrar limpieza automáticamente aquí - solo se registra en confirmCleanRoom
         // Track if room was cleaned (solo para contador interno)
@@ -4757,8 +4876,45 @@ function updateExpensesSummary(period = 'day', shift = 'all') {
     container.innerHTML = html;
 }
 
+// Blindaje contra el formato {type, changedAt} que escribía código de una
+// migración distinta (incidente 2026-07-16): un dispositivo con ese código
+// todavía en memoria puede re-subir ese objeto a Firebase encima de un
+// valor ya corregido. getCurrentShift() compara con === 'day', así que ese
+// objeto (verdadero pero no === 'day') caía siempre a "noche" y las
+// ganancias del turno se veían en $0 sin que nadie cerrara nada. Normaliza
+// a la forma plana esperada en cualquier punto donde currentShiftType
+// pueda venir de Firebase/localStorage, no solo aquí.
+function _normalizeShiftType(value) {
+    // NO re-subir el valor corregido a Firebase: hacerlo confía en que el
+    // ".type" embebido en el objeto corrupto es el turno correcto, cuando en
+    // realidad puede venir de un dispositivo con código viejo cuyo estado en
+    // memoria simplemente está desactualizado (p.ej. no vio un cierre de
+    // turno manual que otro dispositivo sí hizo). Re-publicar ese valor como
+    // si fuera la verdad puede pisar un cambio de turno legítimo hecho en
+    // otro dispositivo. Esta función solo corrige la FORMA para uso local
+    // (display/cálculo), sin tocar el documento compartido.
+    if (value && typeof value === 'object' && typeof value.type === 'string') {
+        return value.type;
+    }
+    // Cualquier otro valor que no sea exactamente 'day'/'night' es basura —
+    // incluye el caso real encontrado el 2026-07-16: un `localStorage.setItem`
+    // sin JSON.stringify en algún punto (código viejo) coaccionó un objeto a
+    // su .toString(), guardando literalmente el string "[object Object]",
+    // que NO es `typeof === 'object'` y por lo tanto no lo detectaba el
+    // chequeo de arriba. getCurrentShift() trataba cualquier valor truthy
+    // distinto de 'day' como "noche" sin más — con esta cadena forzaba
+    // siempre noche sin importar la hora real, mostrando $0 de un turno que
+    // nadie cerró. En vez de asumir "noche" para cualquier basura, calcular
+    // el turno correcto por hora de reloj.
+    if (value !== 'day' && value !== 'night') {
+        return getExpectedShiftType();
+    }
+    return value;
+}
+
 function getCurrentShift() {
     // Si hay un turno manual establecido, usarlo
+    currentShiftType = _normalizeShiftType(currentShiftType);
     if (currentShiftType) {
         if (currentShiftType === 'day') {
             return {
@@ -4977,8 +5133,17 @@ function updateShiftControl() {
     // Actualizar badge y horario
     const badge = document.getElementById('scShiftBadge');
     const timeEl = document.getElementById('scShiftTime');
+    const dateEl = document.getElementById('scShiftDate');
     if (badge) badge.textContent = shift.name.toUpperCase();
     if (timeEl) timeEl.textContent = shift.type === 'day' ? '6:00 AM – 6:00 PM' : '6:00 PM – 6:00 AM';
+    // Fecha del DÍA EN QUE EMPEZÓ el turno (currentShiftStart), no la fecha de
+    // hoy — un turno de noche que arrancó el 17 sigue siendo "17 de julio"
+    // aunque ya sea después de medianoche del 18 cuando se consulta esto.
+    if (dateEl) {
+        dateEl.textContent = currentShiftStart
+            ? new Date(currentShiftStart).toLocaleDateString('es-MX', { day: 'numeric', month: 'long' })
+            : '';
+    }
 
     ensureRevenueIndex();
 
@@ -5987,6 +6152,96 @@ function downloadShiftReport(reportIndex) {
     const shiftExpenses = expenses.filter(e => !e.deleted && e.shift === report.shiftType && e.timestamp >= report.startTime && e.timestamp <= report.closedAt);
     const shiftRenewals = roomRevenue.filter(r => r.shift === report.shiftType && r.type === 'renewal' && r.timestamp >= report.startTime && r.timestamp <= report.closedAt);
     generateShiftReport(shift, shiftRooms, shiftCleaned, shiftSales, shiftExpenses, shiftRenewals, report);
+}
+
+// Botón de descarga por turno en la tabla de Reporte Mensual (generateDailyIncomeTable),
+// junto a "Turno Día"/"Turno Noche". A diferencia de downloadShiftReport()
+// (que lee de shiftReports, solo turnos ya cerrados con snapshot guardado),
+// esta fila se arma directo de los registros de roomRevenue/sales/expenses
+// del mes — funciona para cualquier turno del historial, tenga o no un
+// reporte de cierre guardado.
+async function downloadShiftDayReport(year, month, day, shiftType) {
+    await ensureMonthDataLoaded(year, month);
+    const monthRevenueRecords = getMonthRecords(year, month, 'revenue');
+    const monthSalesRecords = getMonthRecords(year, month, 'sales');
+    const monthExpenseRecords = getMonthRecords(year, month, 'expenses');
+
+    const shiftStart = shiftType === 'day'
+        ? new Date(year, month, day, 6, 0, 0).getTime()
+        : new Date(year, month, day, 18, 0, 0).getTime();
+    const shiftEnd = shiftType === 'day'
+        ? new Date(year, month, day, 17, 59, 59).getTime()
+        : new Date(year, month, day + 1, 5, 59, 59).getTime();
+
+    const inShift = (item) => item.timestamp >= shiftStart && item.timestamp <= shiftEnd && item.shift === shiftType;
+    const rooms       = monthRevenueRecords.filter(r => inShift(r) && r.type === 'sold');
+    const renewals     = monthRevenueRecords.filter(r => inShift(r) && r.type === 'renewal');
+    const cleaned       = monthRevenueRecords.filter(r => inShift(r) && r.type === 'cleaned');
+    const salesShift   = monthSalesRecords.filter(s => inShift(s));
+    const expensesShift = (monthExpenseRecords || []).filter(e => !e.deleted && inShift(e));
+
+    const pm = { efectivo: 0, tarjeta: 0 };
+    [...rooms, ...renewals].forEach(r => { pm[isCardOrBankPayment(r.paymentMethod) ? 'tarjeta' : 'efectivo'] += r.price; });
+    salesShift.forEach(s => { pm[isCardOrBankPayment(s.paymentMethod) ? 'tarjeta' : 'efectivo'] += s.total; });
+
+    const roomRevenueTotal = rooms.reduce((s, r) => s + r.price, 0) + renewals.reduce((s, r) => s + r.price, 0);
+    const salesRevenueTotal = salesShift.reduce((s, r) => s + r.total, 0);
+    const expTotal = expensesShift.reduce((s, e) => s + e.amount, 0);
+
+    const dateObj = new Date(year, month, day);
+    const dateStr = dateObj.toLocaleDateString('es-MX', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+    const shiftLabel = shiftType === 'day' ? 'Turno Día (6:00 AM - 6:00 PM)' : 'Turno Noche (6:00 PM - 6:00 AM)';
+
+    let content = `REPORTE DE TURNO - RAPID INN\n${'='.repeat(50)}\n\n`;
+    content += `Turno: ${shiftLabel}\nFecha: ${dateStr}\n\n`;
+    content += `${'─'.repeat(50)}\nRESUMEN FINANCIERO\n${'─'.repeat(50)}\n`;
+    content += `Ingresos habitaciones: $${roomRevenueTotal.toFixed(2)}\nIngresos ventas: $${salesRevenueTotal.toFixed(2)}\nEgresos: $${expTotal.toFixed(2)}\nTOTAL NETO: $${(roomRevenueTotal + salesRevenueTotal - expTotal).toFixed(2)}\n\n`;
+    content += `CORTE POR MÉTODO DE PAGO\nEfectivo: $${pm.efectivo.toFixed(2)}\nTarjeta: $${pm.tarjeta.toFixed(2)}\n\n`;
+    content += `HABITACIONES\nVendidas: ${rooms.length} | Renovaciones: ${renewals.length} | Limpiadas: ${cleaned.length}\n\n`;
+
+    if (rooms.length > 0) {
+        content += `HABITACIONES VENDIDAS\n`;
+        rooms.forEach(r => {
+            const time = new Date(r.timestamp).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+            content += `Hab.${r.roomNumber} (${r.building === 'regulares' ? 'Ed.1' : 'Torre'}) - $${r.price.toFixed(2)} - ${r.paymentMethod || 'efectivo'} - ${time}\n`;
+        });
+        content += '\n';
+    }
+    if (renewals.length > 0) {
+        content += `RENOVACIONES\n`;
+        renewals.forEach(r => {
+            const time = new Date(r.timestamp).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+            content += `Hab.${r.roomNumber} - $${r.price.toFixed(2)} - ${time}\n`;
+        });
+        content += '\n';
+    }
+    if (salesShift.length > 0) {
+        content += `VENTAS DE INVENTARIO\n`;
+        salesShift.forEach(s => { content += `${s.productName} x${s.quantity} = $${s.total.toFixed(2)}\n`; });
+        content += '\n';
+    }
+    if (expensesShift.length > 0) {
+        content += `EGRESOS\n`;
+        expensesShift.forEach(e => { content += `${e.description}: $${e.amount.toFixed(2)}\n`; });
+    }
+
+    const filename = `Reporte_${shiftType === 'day' ? 'TurnoDia' : 'TurnoNoche'}_${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}.txt`;
+    const shiftShortLabel = shiftType === 'day' ? 'Turno Día' : 'Turno Noche';
+    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768;
+
+    if (isMobile) {
+        showMobileReportModal(content, shiftShortLabel, filename);
+    } else {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
 }
 
 // ============ MODAL MÉTODO DE PAGO ============
@@ -7594,7 +7849,7 @@ async function generateDailyIncomeTable() {
             // Fila turno día
             html += `<tr class="mr-shift-day">
                 <td></td>
-                <td style="text-align:left;padding-left:16px;">☀️ Turno Día</td>
+                <td style="text-align:left;padding-left:16px;">☀️ Turno Día <button class="btn-download-shift" onclick="downloadShiftDayReport(${_mrYear},${_mrMonth},${d},'day')" title="Descargar reporte de este turno">📥</button></td>
                 <td><span class="mr-shift-badge dia">DÍA</span></td>
                 <td>${sd.reg}</td>
                 <td>${sd.torre}</td>
@@ -7609,7 +7864,7 @@ async function generateDailyIncomeTable() {
             // Fila turno noche
             html += `<tr class="mr-shift-night">
                 <td></td>
-                <td style="text-align:left;padding-left:16px;">🌙 Turno Noche</td>
+                <td style="text-align:left;padding-left:16px;">🌙 Turno Noche <button class="btn-download-shift" onclick="downloadShiftDayReport(${_mrYear},${_mrMonth},${d},'night')" title="Descargar reporte de este turno">📥</button></td>
                 <td><span class="mr-shift-badge noche">NOCHE</span></td>
                 <td>${sn.reg}</td>
                 <td>${sn.torre}</td>
@@ -8395,43 +8650,20 @@ function handleFirebaseRealtimeUpdate(key, val) {
             break;
 
         case 'motelRooms':
-            if (Array.isArray(val) && val.length > 0) {
-                const currentRooms = rooms || [];
-                const incomingRooms = val;
-
-                rooms = mergeRoomsFromFirebase(incomingRooms, currentRooms);
-                localStorage.setItem('motelRooms', JSON.stringify(rooms));
-
-                // Antes solo comparaba r.status !== inc.status para decidir si
-                // había que re-subir el resultado del merge a Firebase. Con el
-                // fix de resolveRoomConflict() que también puede quedarse con
-                // el precio/endTime/etc. LOCAL cuando su lastModified es más
-                // nuevo (p.ej. una renovación reciente en ESTE dispositivo que
-                // el remoto aún no vio), el status podía coincidir en ambos
-                // lados mientras el precio seguía siendo distinto — y esa
-                // corrección nunca se volvía a subir. _roomsDiffer() detecta
-                // cualquier campo que haya "ganado" localmente, no solo el
-                // status (comparación por clave, no por JSON.stringify crudo,
-                // porque el orden de claves entre el objeto local y el que
-                // llegó de Firestore no está garantizado y produciría falsos
-                // positivos constantes).
-                const incomingById = new Map(incomingRooms.map(r => [r.id, r]));
-                const localWon = rooms.some(r => {
-                    const inc = incomingById.get(r.id);
-                    return inc && _roomsDiffer(r, inc);
-                });
-                if (localWon) saveData();
-
-                if (currentUser && currentUser.role === 'limpieza') renderCleaningRooms();
-                else renderRooms();
-                renderReservationsSidebar();
-
-                if (document.getElementById('shift-control-tab')?.classList.contains('active')) {
-                    updateShiftControl();
-                } else {
-                    _shiftDataStale = true;
+            // Autoritativo ahora es la colección por habitación (ver
+            // _subscribeRoomDocListeners). Este caso solo agrega
+            // habitaciones que falten localmente (no debería pasar nunca:
+            // el set de 32 es fijo), sin tocar ninguna que ya exista.
+            if (Array.isArray(val) && val.length > 0 && Array.isArray(rooms)) {
+                const localIds = new Set(rooms.map(r => r && r.id));
+                const missing = val.filter(r => r && r.id && !localIds.has(r.id));
+                if (missing.length > 0) {
+                    rooms = rooms.concat(missing);
+                    localStorage.setItem('motelRooms', JSON.stringify(rooms));
+                    console.warn('[Sync] Habitaciones faltantes agregadas desde motelRooms:', missing.map(r => r.id));
+                    if (currentUser && currentUser.role === 'limpieza') renderCleaningRooms();
+                    else renderRooms();
                 }
-                updateStatistics();
             }
             break;
 
@@ -8516,8 +8748,8 @@ function handleFirebaseRealtimeUpdate(key, val) {
 
         case 'motelCurrentShiftType':
             if (val) {
-                currentShiftType = val;
-                localStorage.setItem('motelCurrentShiftType', val);
+                currentShiftType = _normalizeShiftType(val);
+                localStorage.setItem('motelCurrentShiftType', currentShiftType);
                 console.log('[Sync] currentShiftType actualizado:', currentShiftType);
                 if (document.getElementById('shift-control-tab')?.classList.contains('active')) {
                     updateShiftControl();
@@ -8540,6 +8772,28 @@ function handleFirebaseRealtimeUpdate(key, val) {
     }
 }
 
+// Firestore no impone un límite de tiempo propio a sus llamadas — en una red
+// mala (motel con internet débil/intermitente) un .get() puede quedar
+// "colgado" mucho más de lo razonable esperando una respuesta que nunca
+// llega o tarda minutos. Como la carga inicial de abajo se hace en cadena
+// (await tras await) y el listener en tiempo real (el que de verdad
+// sincroniza al instante) recién se activa DESPUÉS de que toda esa cadena
+// termine, una sola llamada colgada retrasaba la apertura del canal en vivo
+// tanto como tardara esa llamada en fallar — minutos, a veces bastante más.
+// _withTimeout() deja de esperar un paso lento sin cancelar la petición real
+// (que puede seguir resolviendo en segundo plano sin causar daño): el
+// listener en tiempo real, que sí trae el estado completo y actualizado en
+// su primer snapshot, arranca de todos modos y termina poniendo todo al día.
+function _withTimeout(promise, ms, label) {
+    return Promise.race([
+        promise,
+        new Promise(resolve => setTimeout(() => {
+            console.warn(`[App] "${label}" superó ${ms}ms — se continúa sin esperarlo (el listener en tiempo real lo pondrá al día).`);
+            resolve(null);
+        }, ms))
+    ]);
+}
+
 async function initFirebaseSync() {
     if (!window.FirebaseSync || !window.FirebaseSync.ready || _fbListening) return;
     _fbListening = true;
@@ -8554,28 +8808,70 @@ async function initFirebaseSync() {
     // Actualizar estado inicial
     updateConnectionStatus(window.FirebaseSync.isOnline(), 0);
 
-    // Cargar datos desde Firebase (fuente de verdad)
-    // Siempre usar loadAllFresh para evitar datos obsoletos del caché IndexedDB
-    // cuando la app se abre desde el acceso directo después de horas en background
+    // 🔥 LISTENER EN TIEMPO REAL — activado DE INMEDIATO, en paralelo con la
+    // carga "fresca" de una sola vez de abajo, no después de que termine ni
+    // con un delay artificial (antes 2s). Prioridad: sincronizar lo más
+    // rápido posible sin importar el costo en lecturas — el usuario ya está
+    // en plan Blaze y pidió explícitamente esto. Correr ambos caminos en
+    // paralelo es seguro porque los dos aplican los datos con las mismas
+    // funciones de fusión idempotentes (mergeRoomsFromFirebase,
+    // mergeArraysById, etc.) — no hay corrupción posible por la carrera.
+    if (window.FirebaseSync.listenAll) {
+        console.log('[App] 🔥 Activando sincronización en tiempo real (selectiva)...');
+        _reactivateRealtimeListeners('carga inicial');
+        _hotWindowAnchorKey = `${new Date().getFullYear()}_${new Date().getMonth()}`; // evita que el rollover horario vuelva a disparar la suscripción que ya se acaba de hacer arriba
+        console.log('[App] ✅ Sincronización en tiempo real ACTIVADA (selectiva)');
+        if (window.FirebaseSync.startReconnectionSystem) {
+            window.FirebaseSync.startReconnectionSystem();
+            console.log('[App] 🔄 Sistema de reconexión automática iniciado');
+        }
+    }
+
+    // Cargar datos desde Firebase (fuente de verdad, "mejor esfuerzo" con
+    // límite de tiempo — ver _withTimeout): el listener de arriba ya está
+    // trayendo el estado real por su cuenta, así que esto es un complemento,
+    // no un bloqueante.
     try {
         // Procesar cola offline PRIMERO: subir cambios locales pendientes antes de leer
         // el estado "fresco" de Firebase. Sin esto, Firebase podría devolver datos
         // más viejos que los cambios que el usuario hizo mientras estaba sin conexión.
         if (window.FirebaseSync.syncPending) {
-            try { await window.FirebaseSync.syncPending(); } catch(_) {}
+            try { await _withTimeout(window.FirebaseSync.syncPending(), 6000, 'syncPending'); } catch(_) {}
         }
 
         console.log('[App] Cargando datos frescos desde Firebase (servidor)...');
-        const fbData = await window.FirebaseSync.loadAllFresh();
-        
+        const fbData = (await _withTimeout(window.FirebaseSync.loadAllFresh(), 8000, 'loadAllFresh')) || {};
+
         let dataLoaded = false;
         
-        if (fbData.motelRooms && fbData.motelRooms.length > 0) {
+        if (Array.isArray(fbData.motelRoomDocs) && fbData.motelRoomDocs.length > 0) {
+            // mergeRoomsFromFirebase() en vez de un reemplazo ciego del
+            // arreglo: si un listener en tiempo real (ya activo desde el
+            // arranque de esta función) entregó una actualización real
+            // MIENTRAS esta carga lenta estaba en vuelo, un reemplazo ciego
+            // la pisaría al llegar después — mergeRoomsFromFirebase resuelve
+            // por timestamp de estado, así que gana quien de verdad pasó
+            // último, sin importar el orden de llegada.
+            rooms = mergeRoomsFromFirebase(fbData.motelRoomDocs, rooms);
+            localStorage.setItem('motelRooms', JSON.stringify(rooms));
+            dataLoaded = true;
+        } else if (fbData.motelRooms && fbData.motelRooms.length > 0) {
             // Merge inteligente en lugar de reemplazar directo - previene pérdida de datos locales
             rooms = mergeRoomsFromFirebase(fbData.motelRooms, rooms);
             localStorage.setItem('motelRooms', JSON.stringify(rooms));
             dataLoaded = true;
         }
+        // rooms ya pasó por su mejor intento de reconciliación con la nube
+        // (por cualquiera de las dos ramas de arriba, o ninguna si Firebase
+        // no devolvió nada) — re-suscribir los listeners por habitación
+        // (registrados en 'carga inicial' contra el `rooms` de localStorage,
+        // posiblemente vacío/viejo) contra el set ya actualizado, y abrir la
+        // puerta de broadcast por-habitación. Llamada DIRECTA (no vía
+        // _reactivateRealtimeListeners) para no toparse con su debounce de
+        // 5s — _subscribeRoomDocListeners() solo hace Map.set en memoria, no
+        // vuelve a abrir ninguna conexión.
+        _subscribeRoomDocListeners();
+        _markRoomsReconciled('carga inicial');
         if (Array.isArray(fbData.motelInventory)) {
             inventory = mergeInventoryFromCloud(fbData.motelInventory, inventory);
             localStorage.setItem('motelInventory', JSON.stringify(inventory));
@@ -8589,8 +8885,8 @@ async function initFirebaseSync() {
         // roomRevenue/sales/expenses ya no viven en fbData (ver sección
         // SHARDING MENSUAL): se migran una sola vez desde los documentos
         // planos viejos y luego se cargan/escuchan por shard mensual.
-        await migrateToMonthlyShards();
-        await _loadHotShardsFromFirebase();
+        await _withTimeout(migrateToMonthlyShards(), 8000, 'migrateToMonthlyShards');
+        await _withTimeout(_loadHotShardsFromFirebase(), 8000, '_loadHotShardsFromFirebase');
         persistHotShards();
         dataLoaded = true;
         if (Array.isArray(fbData.motelShiftReports)) {
@@ -8613,7 +8909,7 @@ async function initFirebaseSync() {
             dataLoaded = true;
         }
         if (fbData.motelCurrentShiftType) {
-            currentShiftType = fbData.motelCurrentShiftType;
+            currentShiftType = _normalizeShiftType(fbData.motelCurrentShiftType);
             localStorage.setItem('motelCurrentShiftType', currentShiftType);
             dataLoaded = true;
         }
@@ -8717,24 +9013,45 @@ async function initFirebaseSync() {
         console.log('[App] Usando datos de localStorage como fallback');
         showToast('⚠️ Error cargando datos de la nube, usando datos locales', 'warning');
     }
+}
 
-    // 🔥 LISTENER EN TIEMPO REAL — activado 2 s después para no solaparse con la carga inicial
-    if (window.FirebaseSync.listenAll) {
-        setTimeout(() => {
-        console.log('[App] 🔥 Activando sincronización en tiempo real (selectiva)...');
+let _freshReloadInProgress = false;
 
-        _reactivateRealtimeListeners('carga inicial');
-        _hotWindowAnchorKey = `${new Date().getFullYear()}_${new Date().getMonth()}`; // evita que el rollover horario vuelva a disparar la suscripción que ya se acaba de hacer arriba
-
-        console.log('[App] ✅ Sincronización en tiempo real ACTIVADA (selectiva)');
-
-        // Iniciar sistema de reconexión automática
-        if (window.FirebaseSync && window.FirebaseSync.startReconnectionSystem) {
-            window.FirebaseSync.startReconnectionSystem();
-            console.log('[App] 🔄 Sistema de reconexión automática iniciado');
-        }
-        }, 2000); // fin setTimeout listenAll
+async function _loadAllFreshWithRetry(reason, maxAttempts = 4) {
+    if (_freshReloadInProgress) {
+        console.log(`[App] Recarga fresca ya en curso, se ignora solicitud (${reason})`);
+        return null;
     }
+    _freshReloadInProgress = true;
+
+    let delay = 1500;
+    try {
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                console.log(`[App] Recarga fresca (${reason}) — intento ${attempt}/${maxAttempts}`);
+                // Con límite de tiempo: sin esto, un intento colgado en mala
+                // red nunca llegaba al finally de abajo, y _freshReloadInProgress
+                // quedaba en true para siempre — todo resync futuro se
+                // ignoraba silenciosamente hasta recargar la página entera.
+                const fbData = await _withTimeout(window.FirebaseSync.loadAllFresh(), 10000, `loadAllFresh (${reason}, intento ${attempt})`);
+                if (fbData && Object.keys(fbData).length > 0) {
+                    return fbData;
+                }
+                throw new Error('loadAllFresh devolvió vacío o superó el límite de tiempo');
+            } catch (e) {
+                console.warn(`[App] Intento ${attempt} de recarga fresca falló (${reason}):`, e.message);
+                if (attempt === maxAttempts) {
+                    console.error('[App] Recarga fresca falló tras todos los reintentos:', e.message);
+                    return null;
+                }
+                await new Promise(r => setTimeout(r, delay));
+                delay = Math.min(delay * 2, 12000);
+            }
+        }
+    } finally {
+        _freshReloadInProgress = false;
+    }
+    return null;
 }
 
 // ============ SINCRONIZACIÓN AL VOLVER DEL BACKGROUND ============
@@ -8774,33 +9091,76 @@ async function initFirebaseSync() {
         if (!window.FirebaseSync || !window.FirebaseSync.ready) return;
 
         console.log('[App] Volviendo del background — recargando datos frescos de Firebase...');
+        try { showToast('Sincronizando datos…', 'info', 4000); } catch (e) {}
 
         try {
             // 1. Forzar reactivación de la red Firebase (puede estar dormida)
             _db.enableNetwork().catch(() => {});
 
+            // 1.1. Reconexión DURA de los streams compartidos, ADEMÁS de (no
+            // en vez de) la reactivación barata habitual — un celular
+            // suspendido por el sistema operativo mucho tiempo puede dejar
+            // el stream "zombie" (deja de entregar datos para siempre sin
+            // disparar nunca su callback de error, así que el backoff/retry
+            // normal nunca se activa). Volver de background tras rato oculto
+            // es EXACTAMENTE el escenario de riesgo — forzar reconexión real
+            // acá en vez de esperar a que el usuario note que algo quedó
+            // desactualizado y tenga que recargar la página a mano.
+            if (window.FirebaseSync.forceReconnectAll) {
+                window.FirebaseSync.forceReconnectAll();
+            }
+            _reactivateRealtimeListeners('volver del background');
+
             // 1.5. Procesar cola offline PRIMERO — subir los cambios locales pendientes
             // ANTES de leer Firebase. De lo contrario, un loadAllFresh puede traer datos
             // más viejos que los cambios que quedaron en la cola mientras estaba sin red.
             if (window.FirebaseSync.syncPending) {
-                try { await window.FirebaseSync.syncPending(); } catch(_) {}
+                try { await _withTimeout(window.FirebaseSync.syncPending(), 6000, 'syncPending (background)'); } catch(_) {}
             }
 
-            // 2. Recargar datos directamente del servidor (sin caché stale)
-            const fbData = await window.FirebaseSync.loadAllFresh();
+            // 2. Recargar datos directamente del servidor (sin caché stale),
+            // con reintentos y backoff (ver _loadAllFreshWithRetry): en mala
+            // red, un solo intento fallido dejaba la recarga sin aplicar
+            // hasta el próximo regreso de background. El listener en tiempo
+            // real ya se reactivó arriba en paralelo, así que esto es un
+            // complemento — si falla tras todos los reintentos, se mantienen
+            // los datos actuales en vez de aplicar un objeto vacío.
+            const fbData = await _loadAllFreshWithRetry('volver del background');
+            if (!fbData) {
+                console.warn('[App] No se pudo recargar tras volver del background, se mantienen datos actuales');
+                return;
+            }
 
-            // Aplicar datos frescos a las variables globales (misma lógica que initApp)
-            if (fbData.motelRooms && Array.isArray(fbData.motelRooms) && fbData.motelRooms.length > 0) {
+            // Aplicar datos frescos a las variables globales (misma lógica que initApp).
+            // Prioridad a motelRoomDocs (colección dedicada, autoritativa) —
+            // igual que en initFirebaseSync: mergeRoomsFromFirebase() sobre el
+            // motelRooms plano compara por timestamp de reloj y podría
+            // revertir un cambio reciente que ya está resuelto correctamente
+            // vía la colección por habitación.
+            if (Array.isArray(fbData.motelRoomDocs) && fbData.motelRoomDocs.length > 0) {
+                // mergeRoomsFromFirebase() en vez del reemplazo ciego — ver
+                // comentario largo en initFirebaseSync sobre por qué.
+                rooms = mergeRoomsFromFirebase(fbData.motelRoomDocs, rooms);
+                localStorage.setItem('motelRooms', JSON.stringify(rooms));
+            } else if (fbData.motelRooms && Array.isArray(fbData.motelRooms) && fbData.motelRooms.length > 0) {
                 rooms = mergeRoomsFromFirebase(fbData.motelRooms, rooms);
                 localStorage.setItem('motelRooms', JSON.stringify(rooms));
             }
+            // _reactivateRealtimeListeners('volver del background') ya se
+            // llamó arriba, ANTES de que `rooms` se actualizara acá — los
+            // listeners por habitación que registró en ese momento pueden
+            // haber quedado contra un `rooms` desactualizado. Re-suscribir
+            // ahora que `rooms` ya está reconciliado (llamada directa, sin
+            // costo de red — ver comentario en initFirebaseSync).
+            _subscribeRoomDocListeners();
+            _markRoomsReconciled('volver del background');
             if (fbData.motelInventory && Array.isArray(fbData.motelInventory)) {
                 inventory = mergeInventoryFromCloud(fbData.motelInventory, inventory);
                 localStorage.setItem('motelInventory', JSON.stringify(inventory));
             }
             // roomRevenue/sales/expenses: recargar/re-fusionar la ventana
             // caliente por shard mensual (ya no viven en fbData).
-            await _loadHotShardsFromFirebase();
+            await _withTimeout(_loadHotShardsFromFirebase(), 8000, '_loadHotShardsFromFirebase (background)');
             persistHotShards();
             rolloverHotWindowIfNeeded();
             if (fbData.motelReservations && Array.isArray(fbData.motelReservations)) {
@@ -8840,17 +9200,9 @@ async function initFirebaseSync() {
                 localStorage.setItem('motelCurrentShiftStart', JSON.stringify(currentShiftStart));
             }
             if (fbData.motelCurrentShiftType) {
-                currentShiftType = fbData.motelCurrentShiftType;
+                currentShiftType = _normalizeShiftType(fbData.motelCurrentShiftType);
                 localStorage.setItem('motelCurrentShiftType', currentShiftType);
             }
-
-            // 3. Re-activar listeners en tiempo real (pueden estar muertos tras horas) —
-            // tanto motelRooms/etc. (listenAll) como los shards mensuales de
-            // roomRevenue/sales/expenses, a través del punto único con
-            // debounce (ver _reactivateRealtimeListeners) para que esto no
-            // colisione con la reactivación de la carga inicial si ambas
-            // llegan a dispararse a los pocos segundos una de la otra.
-            _reactivateRealtimeListeners('volver del background');
 
             // 4. Re-renderizar vistas críticas
             if (currentUser) {
@@ -8872,9 +9224,51 @@ async function initFirebaseSync() {
             }
 
             console.log('[App] Datos frescos aplicados tras volver del background.');
+            updateConnectionStatus(window.FirebaseSync.isOnline(), 0);
         } catch (e) {
             console.error('[App] Error recargando tras background:', e);
+            updateConnectionStatus(window.FirebaseSync.isOnline(), 0);
         }
+    });
+
+    window.addEventListener('online', async () => {
+        console.log('[App] Evento online detectado, recargando datos frescos...');
+        const fbData = await _loadAllFreshWithRetry('evento online');
+        if (!fbData || !window.FirebaseSync || !window.FirebaseSync.ready) return;
+
+        if (Array.isArray(fbData.motelRoomDocs) && fbData.motelRoomDocs.length > 0) {
+            // mergeRoomsFromFirebase() en vez del reemplazo ciego — ver
+            // comentario largo en initFirebaseSync sobre por qué.
+            rooms = mergeRoomsFromFirebase(fbData.motelRoomDocs, rooms);
+            localStorage.setItem('motelRooms', JSON.stringify(rooms));
+        } else if (fbData.motelRooms && Array.isArray(fbData.motelRooms) && fbData.motelRooms.length > 0) {
+            rooms = mergeRoomsFromFirebase(fbData.motelRooms, rooms);
+            localStorage.setItem('motelRooms', JSON.stringify(rooms));
+        }
+        if (fbData.motelInventory && Array.isArray(fbData.motelInventory)) {
+            inventory = mergeInventoryFromCloud(fbData.motelInventory, inventory);
+            localStorage.setItem('motelInventory', JSON.stringify(inventory));
+        }
+
+        // El navegador acaba de recuperar conexión — el stream compartido
+        // pudo haber quedado zombie mientras estuvo sin red (ver
+        // forceReconnectAll en firebase-sync.js). Reconexión dura ADEMÁS de
+        // la reactivación barata habitual, mismo motivo que en el handler
+        // de volver de background.
+        if (window.FirebaseSync.forceReconnectAll) {
+            window.FirebaseSync.forceReconnectAll();
+        }
+        _reactivateRealtimeListeners('evento online');
+        _markRoomsReconciled('evento online');
+
+        if (currentUser) {
+            if (currentUser.role === 'limpieza') renderCleaningRooms();
+            else renderRooms();
+            renderReservationsSidebar();
+            updateStatistics();
+        }
+
+        console.log('[App] Datos aplicados tras evento online.');
     });
 
 })();

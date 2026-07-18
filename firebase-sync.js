@@ -1,4 +1,4 @@
-// ============ FIREBASE SYNC v5.9.31 - OPTIMIZADO ============
+// ============ FIREBASE SYNC v5.9.38 - OPTIMIZADO ============
 // Sistema de sincronización en tiempo real con Firebase
 // Logging reducido para producción
 
@@ -64,14 +64,21 @@ const _db = firebase.firestore();
 // Esto es intermitente por dispositivo/red — por eso un dispositivo
 // sincroniza normal y otro se queda desactualizado en silencio (la carga
 // inicial con .get() funciona por HTTP normal, pero el listener onSnapshot
-// nunca vuelve a recibir cambios). experimentalAutoDetectLongPolling hace
-// una prueba de conectividad rápida al iniciar y cae a long-polling
-// automáticamente en las redes donde el WebChannel falla, sin penalizar a
-// las que sí funcionan bien. useFetchStreams:false evita el modo de
-// streaming por fetch() que dispara el mismo problema en algunos
-// navegadores/proxies.
+// nunca vuelve a recibir cambios).
+//
+// Antes se usaba experimentalAutoDetectLongPolling (prueba de conectividad
+// una sola vez al iniciar, cae a long-polling solo si esa prueba puntual
+// falla). Problema real (2026-07-18): el WiFi del motel resultó ser
+// intermitente con el transporte normal — a veces la prueba de detección
+// pasa, y el listener igual se rompe minutos después en el uso real,
+// dejando el dispositivo sordo hasta el próximo reload. Se fuerza
+// long-polling SIEMPRE en vez de auto-detectar: unos milisegundos más de
+// latencia por actualización, a cambio de no depender de que una prueba de
+// arranque haya adivinado bien el comportamiento real de esa red — dado que
+// acá la prioridad explícita es que sincronice siempre, no ahorrar
+// milisegundos (ver plan Blaze, sin restricción de costo).
 _db.settings({
-    experimentalAutoDetectLongPolling: true,
+    experimentalForceLongPolling: true,
     useFetchStreams: false
 });
 
@@ -108,6 +115,21 @@ let _authCooldownUntil = 0;
 const MAX_AUTH_RETRIES = 3;
 const AUTH_RETRY_COOLDOWN_MS = 30000;
 
+// signInAnonymously() no tiene límite de tiempo propio — en una red mala
+// puede quedar esperando una respuesta mucho más de lo razonable en vez de
+// fallar rápido. Como TODO pasa por auth primero (guardados, cargas, y el
+// listener en tiempo real que de verdad sincroniza al instante), un intento
+// de login colgado bloqueaba silenciosamente la sincronización completa por
+// tanto tiempo como tardara esa llamada en resolver — a veces varios
+// minutos. Este límite fuerza a tratarlo como un fallo más (mismo camino de
+// reintento/cooldown de abajo) en vez de quedar esperando indefinidamente.
+function _authTimeout(promise, ms) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('auth-timeout')), ms))
+    ]);
+}
+
 async function _ensureAuth() {
     if (_authReady && firebase.auth().currentUser) return true;
     if (_authReady && !firebase.auth().currentUser) _authReady = false; // sesión perdida
@@ -122,7 +144,7 @@ async function _ensureAuth() {
 
     try {
         log('[Firebase] 🔄 Iniciando autenticación anónima...');
-        await firebase.auth().signInAnonymously();
+        await _authTimeout(firebase.auth().signInAnonymously(), 10000);
         _authReady = true;
         _authRetries = 0;
         log('[Firebase] ✅ Autenticación anónima exitosa');
@@ -340,7 +362,7 @@ let _keyHandlers = new Map(); // docId -> callback(doc)
 
 function _ensureCollectionListener() {
     if (_collectionStop) return; // ya hay un stream vivo (o reconectándose) — no hay nada que volver a registrar
-    _collectionStop = _subscribeCollectionResilient((doc) => {
+    _collectionStop = _subscribeCollectionResilientFor(_db.collection(_COLL), (doc) => {
         const handler = _keyHandlers.get(doc.id);
         if (handler) handler(doc);
     });
@@ -360,12 +382,35 @@ function _registerKeyHandler(key, handler) {
 // Igual que la suscripción resiliente por documento que reemplaza, pero para
 // TODA la colección: espera la autenticación antes de llamar a onSnapshot()
 // (las reglas de Firestore exigen request.auth != null) y se reconecta solo
-// con backoff si el stream muere.
-function _subscribeCollectionResilient(onDocChange) {
+// con backoff si el stream muere. Generalizada para aceptar cualquier
+// referencia de colección (no solo `_COLL`) — usada tanto para la colección
+// principal como para la colección dedicada de habitaciones (ver "COLECCIÓN
+// DEDICADA" más abajo). La lógica de backoff/MIN_STABLE_MS/resource-exhausted
+// es EXACTAMENTE la misma para ambas: cada llamada crea su propio closure con
+// su propio estado (liveUnsub/backoff/etc.), así que dos colecciones nunca
+// comparten ni pisan el backoff/estado de la otra.
+function _subscribeCollectionResilientFor(collRef, onDocChange, label = '(colección completa)') {
     let liveUnsub = null;
     let retryTimer = null;
     let stopped = false;
-    let backoff = 2000;
+    let backoff = 1000;
+    // Plan Blaze activo: ya no hay riesgo de agotar cuota diaria, así que el
+    // techo prioriza reconexión rápida (antes 2 min, pensado para minimizar
+    // lecturas en plan gratuito) en vez de ahorro de lecturas.
+    const BACKOFF_CAP_MS = 15000;
+    let attachedAt = 0;
+    // El stream tiene que sobrevivir esto para contar como "conexión sana" y
+    // resetear el backoff. Sin este mínimo, el backoff se reiniciaba a 2000
+    // con CUALQUIER snapshot exitoso, sin importar cuánto durara la conexión
+    // — en una red donde el canal se cae a mitad de stream en bucle ("transport
+    // errored", ver comentario más abajo), el patrón real es: conecta,
+    // factura la lectura COMPLETA de la colección, se cae de nuevo a los
+    // pocos ms, backoff ya está en 2000 otra vez, reintenta casi
+    // inmediatamente — un bucle de relecturas completas cada 2-4s que agotó
+    // la cuota diaria en un par de horas (pico del 2026-07-16). Ahora solo se
+    // resetea si el stream aguantó lo suficiente como para ser una conexión
+    // real, no un connect-drop instantáneo.
+    const MIN_STABLE_MS = 15000;
 
     async function attach() {
         if (stopped) return;
@@ -373,44 +418,34 @@ function _subscribeCollectionResilient(onDocChange) {
         if (stopped) return;
         if (!authOk) {
             retryTimer = setTimeout(attach, backoff);
-            backoff = Math.min(backoff * 1.5, 30000);
+            backoff = Math.min(backoff * 1.5, BACKOFF_CAP_MS);
             return;
         }
-        liveUnsub = _db.collection(_COLL).onSnapshot(
+        attachedAt = Date.now();
+        liveUnsub = collRef.onSnapshot(
             (snapshot) => {
-                // El backoff SOLO se reinicia acá, cuando de verdad llega un
-                // snapshot exitoso — antes se reiniciaba a 2000 arriba, justo
-                // antes de CADA intento de attach() (con éxito o no), así que
-                // el crecimiento exponencial de abajo (backoff *= 1.5) se
-                // descartaba en el siguiente intento sin llegar a aplicarse
-                // nunca. Resultado real: en una red inestable (el listener
-                // "transport errored en bucle" que ya documentaba el
-                // comentario de arriba) el sistema reintentaba cada 2s de
-                // forma indefinida en vez de espaciarse, y cada reconexión
-                // que lograba prender aunque fuera un instante volvía a leer
-                // la colección completa de Firestore — así se agotó la cuota
-                // diaria de lecturas en un par de horas.
-                backoff = 2000;
+                if (Date.now() - attachedAt > MIN_STABLE_MS) {
+                    backoff = 2000;
+                }
                 snapshot.docChanges().forEach(change => {
                     if (change.type === 'removed') return;
                     onDocChange(change.doc);
                 });
             },
             (err) => {
-                error('[Firebase] Error en listener de colección:', err.code || err.message);
-                _pushDebug('listen-error', `(colección completa): ${err.code || err.message}`);
+                error(`[Firebase] Error en listener de colección ${label}:`, err.code || err.message);
+                _pushDebug('listen-error', `${label}: ${err.code || err.message}`);
                 liveUnsub = null;
                 if (!stopped) {
-                    // Cuota de Firestore agotada: reintentar en 2-30s es
-                    // inútil, no se va a recuperar hasta el reinicio diario
-                    // de la cuota — insistir así solo la mantiene agotada
-                    // (y sigue generando el mismo error en bucle en consola).
-                    // Backoff largo y fijo en este caso específico.
+                    // resource-exhausted en plan Blaze ya no es agotamiento de
+                    // cuota diaria (esa cuota ya no aplica) sino un límite de
+                    // ráfaga de corta duración — un minuto de espera alcanza
+                    // para que se libere, sin quedar reintentando en bucle.
                     if (err.code === 'resource-exhausted') {
-                        retryTimer = setTimeout(attach, 5 * 60 * 1000);
+                        retryTimer = setTimeout(attach, 60 * 1000);
                     } else {
                         retryTimer = setTimeout(attach, backoff);
-                        backoff = Math.min(backoff * 1.5, 30000);
+                        backoff = Math.min(backoff * 1.5, BACKOFF_CAP_MS);
                     }
                 }
             }
@@ -424,6 +459,114 @@ function _subscribeCollectionResilient(onDocChange) {
         if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
         if (liveUnsub) { liveUnsub(); liveUnsub = null; }
     };
+}
+
+// ============ COLECCIÓN DEDICADA: UNA HABITACIÓN = UN DOCUMENTO ============
+// Antes, TODAS las habitaciones vivían como un único arreglo dentro del
+// documento "motelRooms": cualquier guardado (aunque solo hubiera cambiado
+// UNA habitación) reescribía las 32 de golpe, y sincronizar significaba
+// fusionar dos copias completas del arreglo comparando timestamps de reloj
+// embebidos por habitación — ese esquema es la causa raíz de los conflictos
+// que pisaban cambios reales de otro dispositivo cuando dos acciones caían
+// cerca en el tiempo. Con un documento POR habitación, cada escritura solo
+// afecta a la habitación que de verdad cambió, y el ORDEN LO DECIDE
+// FIRESTORE (server-side), no una comparación de relojes de cliente.
+//
+// Colección SEPARADA de `motelData` para no engordar la colección que ya
+// escucha el listener principal — así una reconexión de ESE listener no
+// tiene que releer, además de sus ~20 claves, otras 32 habitaciones que no
+// le interesan. Reutiliza _subscribeCollectionResilientFor (mismo backoff con
+// piso MIN_STABLE_MS ya probado) — no es un patrón nuevo, es la misma
+// función parametrizada para otra colección.
+const _ROOMS_COLL = 'motelRoomDocs';
+let _roomsCollectionStop = null;
+let _roomKeyHandlers = new Map();
+const _lastSavedRoomContent = new Map();
+
+function _ensureRoomsCollectionListener() {
+    if (_roomsCollectionStop) return;
+    _roomsCollectionStop = _subscribeCollectionResilientFor(_db.collection(_ROOMS_COLL), (doc) => {
+        const handler = _roomKeyHandlers.get(doc.id);
+        if (handler) handler(doc);
+    }, '(habitaciones)');
+}
+
+// Fuerza una reconexión REAL de ambos streams compartidos (motelData y
+// motelRoomDocs) — no la reactivación "barata" habitual (que solo
+// re-mapea callbacks en memoria asumiendo que el stream sigue vivo). Hace
+// falta para un caso que _subscribeCollectionResilientFor NO puede
+// detectar por sí solo: un celular suspendido por el sistema operativo
+// mucho tiempo puede dejar el stream "zombie" — deja de entregar datos
+// para siempre, pero nunca llega a disparar el callback de error que
+// activaría su backoff/retry normal. Sin esto, _collectionStop queda
+// apuntando a una función `stop` de un stream que ya no sirve, y
+// _ensureCollectionListener() nunca vuelve a intentar conectar porque cree
+// (correctamente, en el caso normal) que ya hay uno vivo. Se llama al
+// volver de background/reconectar (ver app.js) — barato (una lectura
+// fresca de cada colección, ya medido en segundos) y elimina esta clase de
+// bug por completo en vez de esperar a que el usuario recargue la página a mano.
+function _forceReconnectAllCollections() {
+    if (_collectionStop) { try { _collectionStop(); } catch (e) {} _collectionStop = null; }
+    if (_roomsCollectionStop) { try { _roomsCollectionStop(); } catch (e) {} _roomsCollectionStop = null; }
+    _ensureCollectionListener();
+    _ensureRoomsCollectionListener();
+    _pushDebug('force-reconnect-all');
+}
+
+function _registerRoomKeyHandler(roomId, handler) {
+    _ensureRoomsCollectionListener();
+    _roomKeyHandlers.set(roomId, handler);
+    return function stop() {
+        if (_roomKeyHandlers.get(roomId) === handler) _roomKeyHandlers.delete(roomId);
+    };
+}
+
+// Sin cola offline propia: si esta escritura falla (sin red, sin auth), se
+// omite — el respaldo real sigue siendo _fbSave('motelRooms', rooms) (con su
+// cola offline ya probada), y el próximo guardado normal (que ocurre en casi
+// cualquier acción del empleado) vuelve a intentar este mismo guardado
+// porque _lastSavedRoomContent no se actualizó.
+async function _saveRoomDoc(roomId, room) {
+    const serialized = JSON.stringify(room);
+    if (_lastSavedRoomContent.get(roomId) === serialized) return;
+
+    const authOk = await _ensureAuth();
+    if (!authOk || !_isOnline) return;
+
+    try {
+        await _db.collection(_ROOMS_COLL).doc(roomId).set({
+            value: serialized,
+            timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+            updatedAt: Date.now(),
+            deviceId: (function(){ try { return localStorage.getItem('_deviceId'); } catch(e){} return (window._memStorage&&window._memStorage['_deviceId'])||'unknown'; })()
+        });
+        _lastSavedRoomContent.set(roomId, serialized);
+        _pushDebug('save-room-ok', roomId);
+    } catch (e) {
+        _pushDebug('save-room-fail', `${roomId}: ${e.code || e.message}`);
+    }
+}
+
+// Lee TODOS los documentos de la colección dedicada de habitaciones
+// directamente del servidor (bypass caché) en una sola pasada. Con límite de
+// tiempo (_authTimeout, pese al nombre es un timeout genérico) — sin esto,
+// una reconexión móvil lenta podía dejar esta llamada colgada sin resolver
+// ni rechazar nunca, y todo lo que depende de loadAllFresh() (el resync al
+// volver de background) se quedaba esperando indefinidamente.
+async function _loadAllRoomDocs() {
+    try {
+        const snap = await _authTimeout(_db.collection(_ROOMS_COLL).get({ source: 'server' }), 8000);
+        const rooms = [];
+        snap.forEach(doc => {
+            const d = doc.data();
+            if (!d || typeof d.value !== 'string') return;
+            try { rooms.push(JSON.parse(d.value)); } catch (e) {}
+        });
+        return rooms;
+    } catch (e) {
+        warn('[Firebase] Error cargando colección de habitaciones:', e.code || e.message);
+        return [];
+    }
 }
 
 let _lastSyncError = null; // { key, code, message } del último ítem que falló, para diagnóstico en UI
@@ -529,6 +672,25 @@ window.FirebaseSync = {
     getWatchedKeyCount: () => _keyHandlers.size,
     save: (key, data) => _fbSave(key, data),
     load: (key, fallback) => _fbLoad(key, fallback),
+    // Igual que load(), pero ignora la caché local y fuerza lectura del
+    // servidor — para el caso puntual en que la caché (mantenida por el
+    // listener en tiempo real) es justo lo que podría estar desactualizado
+    // y por eso no sirve como fuente para decidir "¿hay un cambio remoto más
+    // nuevo que el mío?" (ver uso en saveDataThrottled/app.js).
+    loadFresh: async (key, fallback) => {
+        await _ensureAuth();
+        try {
+            const doc = await _db.collection(_COLL).doc(key).get({ source: 'server' });
+            if (doc.exists) {
+                const d = doc.data();
+                if (d && typeof d.value === 'string') return JSON.parse(d.value);
+                return d ? d.value : fallback;
+            }
+        } catch (e) {
+            warn(`[Firebase] Error en loadFresh(${key}):`, e.code || e.message);
+        }
+        return fallback;
+    },
     // FIXED: Paralelizar carga de Firebase con Promise.allSettled
     loadAll: async () => {
         // NOTA: motelSales/motelRoomRevenue/motelExpenses ya NO viven aquí — se
@@ -708,6 +870,34 @@ window.FirebaseSync = {
             _activeListeners.delete(key);
         }
     },
+    // Documento dedicado POR habitación (ver "COLECCIÓN DEDICADA" arriba) —
+    // reemplaza la sincronización de habitaciones basada en comparar
+    // timestamps de reloj entre dispositivos sobre el arreglo completo.
+    saveRoom: (roomId, room) => _saveRoomDoc(roomId, room),
+    listenRoom: (roomId, callback) => {
+        const getDevId = () => { try { return localStorage.getItem('_deviceId'); } catch(e) {} return (window._memStorage&&window._memStorage['_deviceId'])||'unknown'; };
+        return _registerRoomKeyHandler(roomId, (doc) => {
+            if (!doc.exists) return;
+            const d = doc.data();
+            if (!d || !d.value) return;
+            if (d.deviceId === getDevId()) { _pushDebug('own-room-change-ignored', roomId); return; }
+            _pushDebug('room-change-received', roomId);
+            let parsed;
+            try {
+                parsed = JSON.parse(d.value);
+            } catch(e) {
+                error('[Firebase] Error parseando habitación', roomId, e);
+                return;
+            }
+            try {
+                callback(roomId, parsed);
+            } catch(e) {
+                error('[Firebase] Error en callback de listener de habitación', roomId, e);
+            }
+        });
+    },
+    isRoomsCollectionListenerActive: () => !!_roomsCollectionStop,
+    forceReconnectAll: () => _forceReconnectAllCollections(),
     // Carga directamente del servidor, ignorando caché IndexedDB
     // Usar cuando la app vuelve del background después de horas
     loadAllFresh: async () => {
@@ -717,7 +907,10 @@ window.FirebaseSync = {
         await _ensureAuth();
         const promises = keys.map(async (k) => {
             try {
-                const doc = await _db.collection(_COLL).doc(k).get({ source: 'server' });
+                // Igual que en _loadAllRoomDocs(): sin límite de tiempo, una
+                // sola clave lenta en mala red podía dejar toda la carga
+                // fresca colgada (Promise.allSettled espera a TODAS).
+                const doc = await _authTimeout(_db.collection(_COLL).doc(k).get({ source: 'server' }), 8000);
                 if (doc.exists) {
                     const d = doc.data();
                     return [k, d && typeof d.value === 'string' ? JSON.parse(d.value) : (d ? d.value : null)];
@@ -732,6 +925,7 @@ window.FirebaseSync = {
         results.forEach(r => {
             if (r.status === 'fulfilled' && r.value) data[r.value[0]] = r.value[1];
         });
+        data.motelRoomDocs = await _loadAllRoomDocs();
         return data;
     },
     syncPending: async () => {
