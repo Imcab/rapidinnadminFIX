@@ -13,3 +13,4 @@ server.js
 # Backups locales (no forman parte de la app)
 backup-2026-07-07/
 backup-pre-sharding/
+legacy_app/

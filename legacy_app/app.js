@@ -2567,6 +2567,8 @@ async function init() {
     });
 }
 
+
+
 // ============================================================================
 // SISTEMA DE INDEXACIÓN PARA RENDIMIENTO
 // ============================================================================
@@ -9095,7 +9097,7 @@ async function _loadAllFreshWithRetry(reason, maxAttempts = 4) {
 
         try {
             // 1. Forzar reactivación de la red Firebase (puede estar dormida)
-            _db.enableNetwork().catch(() => {});
+            //_db.enableNetwork().catch(() => {}); //COMENTADA 
 
             // 1.1. Reconexión DURA de los streams compartidos, ADEMÁS de (no
             // en vez de) la reactivación barata habitual — un celular

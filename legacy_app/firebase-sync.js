@@ -56,27 +56,6 @@ function _pushDebug(event, detail) {
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const _db = firebase.firestore();
 
-// El canal 'Listen' de Firestore usa WebChannel sobre QUIC/HTTP3 por
-// defecto. En ciertas redes (móviles, algunos routers/ISP, antivirus con
-// inspección SSL, VPNs corporativas) el navegador rompe QUIC a mitad de
-// stream (net::ERR_QUIC_PROTOCOL_ERROR) o el proxy corta el canal con un
-// 400, y el listener en tiempo real queda "transport errored" en bucle.
-// Esto es intermitente por dispositivo/red — por eso un dispositivo
-// sincroniza normal y otro se queda desactualizado en silencio (la carga
-// inicial con .get() funciona por HTTP normal, pero el listener onSnapshot
-// nunca vuelve a recibir cambios).
-//
-// Antes se usaba experimentalAutoDetectLongPolling (prueba de conectividad
-// una sola vez al iniciar, cae a long-polling solo si esa prueba puntual
-// falla). Problema real (2026-07-18): el WiFi del motel resultó ser
-// intermitente con el transporte normal — a veces la prueba de detección
-// pasa, y el listener igual se rompe minutos después en el uso real,
-// dejando el dispositivo sordo hasta el próximo reload. Se fuerza
-// long-polling SIEMPRE en vez de auto-detectar: unos milisegundos más de
-// latencia por actualización, a cambio de no depender de que una prueba de
-// arranque haya adivinado bien el comportamiento real de esa red — dado que
-// acá la prioridad explícita es que sincronice siempre, no ahorrar
-// milisegundos (ver plan Blaze, sin restricción de costo).
 _db.settings({
     experimentalForceLongPolling: true,
     useFetchStreams: false
@@ -84,7 +63,6 @@ _db.settings({
 
 const _COLL = 'motelData';
 
-// Habilitar persistencia offline (IndexedDB) para cargas rápidas en visitas posteriores
 _db.enablePersistence({ synchronizeTabs: true }).catch(e => {
     if (e.code === 'failed-precondition') {
         warn('[Firebase] Persistencia no habilitada: múltiples pestañas abiertas');
@@ -93,7 +71,6 @@ _db.enablePersistence({ synchronizeTabs: true }).catch(e => {
     }
 });
 
-// Configurar Firestore para mejor manejo offline
 _db.enableNetwork().catch(e => {
     warn('[Firebase] Error habilitando red:', e);
     // Continuar de todos modos, el sistema funcionará offline

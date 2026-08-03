@@ -1287,7 +1287,18 @@
         </div>
     </div>
 
-    <script type="module" src="/src/app.js"></script>
+    <script defer src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <!-- Firebase SDK compat (sin defer para cargar primero) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+    <script src="firebase-sync.js?v=5.9.38&t=20260718120000"></script>
+    
+    <!-- Safari Fix - DEBE cargarse ANTES de app.js -->
+    <script src="safari-fix.js?v=5.9.31&t=20260709033000"></script>
+    
+    <script defer src="toast-system.js?v=5.9.31&t=20260709033000"></script>
+    <script defer src="app.js?v=5.9.44&t=20260718123000"></script>
 
     <!-- Modal de Cambio de Contraseña -->
     <div id="changePasswordModal" class="modal">
@@ -1368,5 +1379,21 @@
             <pre id="syncDebugContent" style="text-align:left;white-space:pre-wrap;word-break:break-word;background:#1a1a2e;color:#e0e0e0;border-radius:8px;padding:12px;max-height:50vh;overflow-y:auto;font-size:11px;line-height:1.5;margin-top:10px;"></pre>
         </div>
     </div>
+
+    <script>
+    (function() {
+        // Muestra en el header qué build de app.js tiene cargado ESTE
+        // dispositivo — recargar el navegador no siempre trae el código
+        // nuevo si el usuario no cierra y reabre la pestaña; esta etiqueta
+        // permite comparar a simple vista entre celular y PC si de verdad
+        // están corriendo la misma versión antes de diagnosticar un
+        // problema de sincronización como si fuera de red/Firebase.
+        var el = document.getElementById('appBuildTag');
+        if (!el) return;
+        var s = document.querySelector('script[src*="app.js?v="]') || document.querySelector('script[src*="app.js"]');
+        var m = s && s.src.match(/[?&]v=([^&]+)/);
+        el.textContent = m ? ('build ' + m[1]) : '';
+    })();
+    </script>
 </body>
 </html>
